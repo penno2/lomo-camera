@@ -1,0 +1,14 @@
+Lomo Camera v0.1 — quick Windows build
+
+Best route (you already use Android Studio):
+
+1. File > Open > select the LomoCamera folder.
+2. Allow Gradle sync / install Android SDK Platform 36 if prompted.
+3. Plug in the Pixel 8 with USB debugging enabled.
+4. Select the phone as the Run target.
+5. Run app.
+
+APK after a debug build:
+  app\build\outputs\apk\debug\app-debug.apk
+
+The app requests Camera only. There is no INTERNET permission.
