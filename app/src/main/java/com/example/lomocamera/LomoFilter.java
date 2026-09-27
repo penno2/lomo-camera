@@ -86,9 +86,23 @@ public final class LomoFilter {
             "    return mix(c0, c1, half(f.z));\n" +
             "}\n" +
             "\n" +
+            "half3 finishLook(half3 c) {\n" +
+            "    float3 x = float3(c);\n" +
+            "    float y = dot(x, float3(0.2126, 0.7152, 0.0722));\n" +
+            "    float mid = smoothstep(0.22, 0.40, y) * (1.0 - smoothstep(0.62, 0.82, y));\n" +
+            "    float high = smoothstep(0.55, 0.78, y);\n" +
+            "    x += float3(0.016 * mid + 0.010 * high,\n" +
+            "                0.018 * mid + 0.012 * high,\n" +
+            "                0.005 * mid - 0.015 * high);\n" +
+            "    float lum = dot(x, float3(0.2126, 0.7152, 0.0722));\n" +
+            "    float sat = 1.0 + 0.035 * smoothstep(0.18, 0.55, y);\n" +
+            "    x = float3(lum) + (x - float3(lum)) * sat;\n" +
+            "    return half3(clamp(x, 0.0, 1.0));\n" +
+            "}\n" +
+            "\n" +
             "half4 main(float2 coord) {\n" +
             "    half4 src = cameraInput.eval(coord);\n" +
-            "    half3 mapped = sampleLut(float3(src.rgb));\n" +
+            "    half3 mapped = finishLook(sampleLut(float3(src.rgb)));\n" +
             "    return half4(mapped, src.a);\n" +
             "}\n";
 
@@ -165,7 +179,8 @@ public final class LomoFilter {
                 int g = representative8Bit(g6);
                 for (int b6 = 0; b6 < FAST_SIZE; b6++) {
                     int b = representative8Bit(b6);
-                    int mapped = mapColorTrilinear(0xff000000 | (r << 16) | (g << 8) | b);
+                    int mapped = tuneColor(mapColorTrilinear(
+                            0xff000000 | (r << 16) | (g << 8) | b));
                     fastLut[(r6 << FAST_R_SHIFT) | (g6 << FAST_G_SHIFT) | b6] =
                             mapped & 0x00ffffff;
                 }
@@ -209,6 +224,38 @@ public final class LomoFilter {
                 blue(c001), blue(c101), blue(c011), blue(c111), fr, fg, fb));
 
         return (a << 24) | (clamp255(outR) << 16) | (clamp255(outG) << 8) | clamp255(outB);
+    }
+
+    private static int tuneColor(int argb) {
+        int a = (argb >>> 24) & 0xff;
+        float r = ((argb >>> 16) & 0xff) / 255f;
+        float g = ((argb >>> 8) & 0xff) / 255f;
+        float b = (argb & 0xff) / 255f;
+
+        float y = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+        float mid = smoothstep(0.22f, 0.40f, y) *
+                (1f - smoothstep(0.62f, 0.82f, y));
+        float high = smoothstep(0.55f, 0.78f, y);
+
+        r += 0.016f * mid + 0.010f * high;
+        g += 0.018f * mid + 0.012f * high;
+        b += 0.005f * mid - 0.015f * high;
+
+        float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+        float saturation = 1f + 0.035f * smoothstep(0.18f, 0.55f, y);
+        r = lum + (r - lum) * saturation;
+        g = lum + (g - lum) * saturation;
+        b = lum + (b - lum) * saturation;
+
+        return (a << 24) |
+                (clamp255(Math.round(r * 255f)) << 16) |
+                (clamp255(Math.round(g * 255f)) << 8) |
+                clamp255(Math.round(b * 255f));
+    }
+
+    private static float smoothstep(float edge0, float edge1, float x) {
+        float t = Math.max(0f, Math.min(1f, (x - edge0) / (edge1 - edge0)));
+        return t * t * (3f - 2f * t);
     }
 
     private int lut(int r, int g, int b) {
