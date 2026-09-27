@@ -12,12 +12,12 @@ import android.view.TextureView;
 /**
  * Camera ZOOM FX-inspired Lomo colour transform.
  *
- * The transform is a 33x33x33 RGB LUT fitted from matched input/output calibration
- * photographs. It contains no Camera ZOOM FX code or assets; only a colour mapping
+ * The runtime transform is a compact 17x17x17 RGB LUT resampled from a 33x33x33
+ * calibration LUT fitted from matched input/output photographs. It contains no Camera ZOOM FX code or assets; only a colour mapping
  * inferred from the user's own image pairs.
  */
 public final class LomoFilter {
-    public static final int LUT_SIZE = 33;
+    public static final int LUT_SIZE = 17;
 
     private final Bitmap lutBitmap;
     private final int[] lutPixels;
