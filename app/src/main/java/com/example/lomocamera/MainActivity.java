@@ -92,7 +92,7 @@ public final class MainActivity extends Activity {
     private int deviceOrientation = OrientationEventListener.ORIENTATION_UNKNOWN;
 
     private CameraManager cameraManager;
-    private CameraDevice cameraDevice;
+    private volatile CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
     private CaptureRequest.Builder previewRequestBuilder;
     private CameraCharacteristics cameraCharacteristics;
@@ -101,6 +101,7 @@ public final class MainActivity extends Activity {
     private Size previewSize;
     private Size captureSize;
     private ImageReader imageReader;
+    private Surface previewSurface;
     private boolean flashAvailable;
     private FlashMode flashMode = FlashMode.OFF;
     private Range<Float> zoomRange = new Range<>(1f, 1f);
@@ -109,7 +110,11 @@ public final class MainActivity extends Activity {
     private HandlerThread cameraThread;
     private Handler cameraHandler;
     private final ExecutorService photoExecutor = Executors.newSingleThreadExecutor();
+    // CameraDevice state callbacks must outlive cameraThread shutdown; otherwise Android can
+    // try to deliver onClosed() to a dead Handler when the Activity is paused.
+    private final ExecutorService cameraStateExecutor = Executors.newSingleThreadExecutor();
     private final Semaphore cameraOpenCloseLock = new Semaphore(1);
+    private volatile boolean cameraOpening;
     private boolean processingPhoto;
 
     private float downX;
@@ -141,24 +146,32 @@ public final class MainActivity extends Activity {
     private final CameraDevice.StateCallback cameraStateCallback = new CameraDevice.StateCallback() {
         @Override
         public void onOpened(CameraDevice camera) {
-            cameraOpenCloseLock.release();
             cameraDevice = camera;
-            createCameraPreviewSession();
+            try {
+                createCameraPreviewSession();
+            } finally {
+                completeCameraOpenAttempt();
+            }
         }
 
         @Override
         public void onDisconnected(CameraDevice camera) {
-            cameraOpenCloseLock.release();
+            completeCameraOpenAttempt();
             camera.close();
-            cameraDevice = null;
+            if (cameraDevice == camera) cameraDevice = null;
         }
 
         @Override
         public void onError(CameraDevice camera, int error) {
-            cameraOpenCloseLock.release();
+            completeCameraOpenAttempt();
             camera.close();
-            cameraDevice = null;
+            if (cameraDevice == camera) cameraDevice = null;
             showToast("Camera error " + error);
+        }
+
+        @Override
+        public void onClosed(CameraDevice camera) {
+            if (cameraDevice == camera) cameraDevice = null;
         }
     };
 
@@ -356,6 +369,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         photoExecutor.shutdown();
+        cameraStateExecutor.shutdown();
         super.onDestroy();
     }
 
@@ -377,6 +391,7 @@ public final class MainActivity extends Activity {
 
     private void stopCameraThread() {
         if (cameraThread == null) return;
+        if (cameraHandler != null) cameraHandler.removeCallbacksAndMessages(null);
         cameraThread.quitSafely();
         try {
             cameraThread.join();
@@ -387,7 +402,15 @@ public final class MainActivity extends Activity {
         cameraHandler = null;
     }
 
+    private void completeCameraOpenAttempt() {
+        if (cameraOpening) {
+            cameraOpening = false;
+            cameraOpenCloseLock.release();
+        }
+    }
+
     private void openCamera(int width, int height) {
+        if (cameraDevice != null || cameraOpening) return;
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA_PERMISSION);
             return;
@@ -404,14 +427,19 @@ public final class MainActivity extends Activity {
                 throw new RuntimeException("Timed out waiting to open camera");
             }
             lockAcquired = true;
-            cameraManager.openCamera(cameraId, cameraStateCallback, cameraHandler);
+            cameraOpening = true;
+            cameraManager.openCamera(cameraId, cameraStateExecutor, cameraStateCallback);
+            // The StateCallback owns the semaphore permit until the open attempt completes.
             lockAcquired = false;
         } catch (CameraAccessException e) {
+            cameraOpening = false;
             Log.e(TAG, "Cannot open camera", e);
             showToast("Cannot open camera");
         } catch (InterruptedException e) {
+            cameraOpening = false;
             Thread.currentThread().interrupt();
         } catch (RuntimeException e) {
+            cameraOpening = false;
             Log.e(TAG, "Camera open failed", e);
             showToast("Camera unavailable");
         } finally {
@@ -522,7 +550,9 @@ public final class MainActivity extends Activity {
             SurfaceTexture texture = textureView.getSurfaceTexture();
             if (texture == null || previewSize == null || imageReader == null || cameraDevice == null) return;
             texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
-            Surface previewSurface = new Surface(texture);
+
+            releasePreviewSurface();
+            previewSurface = new Surface(texture);
 
             previewRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             previewRequestBuilder.addTarget(previewSurface);
@@ -536,7 +566,10 @@ public final class MainActivity extends Activity {
                     new CameraCaptureSession.StateCallback() {
                         @Override
                         public void onConfigured(CameraCaptureSession session) {
-                            if (cameraDevice == null) return;
+                            if (cameraDevice == null) {
+                                session.close();
+                                return;
+                            }
                             captureSession = session;
                             try {
                                 captureSession.setRepeatingRequest(previewRequestBuilder.build(),
@@ -548,12 +581,20 @@ public final class MainActivity extends Activity {
 
                         @Override
                         public void onConfigureFailed(CameraCaptureSession session) {
+                            session.close();
                             showToast("Camera preview failed");
                         }
                     },
                     cameraHandler);
         } catch (CameraAccessException e) {
             Log.e(TAG, "Unable to create preview", e);
+        }
+    }
+
+    private void releasePreviewSurface() {
+        if (previewSurface != null) {
+            previewSurface.release();
+            previewSurface = null;
         }
     }
 
@@ -572,9 +613,12 @@ public final class MainActivity extends Activity {
                 imageReader.close();
                 imageReader = null;
             }
+            previewRequestBuilder = null;
+            releasePreviewSurface();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
+            cameraOpening = false;
             cameraOpenCloseLock.release();
         }
     }
