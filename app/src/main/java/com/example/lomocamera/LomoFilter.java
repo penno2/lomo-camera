@@ -29,7 +29,7 @@ public final class LomoFilter {
 
     // LUT atlas layout: x = blueSlice * LUT_SIZE + red, y = green.
     private static final String AGSL =
-            "uniform shader input;\n" +
+            "uniform shader cameraInput;\n" +
             "uniform shader lut;\n" +
             "uniform float lutN;\n" +
             "\n" +
@@ -67,7 +67,7 @@ public final class LomoFilter {
             "}\n" +
             "\n" +
             "half4 main(float2 coord) {\n" +
-            "    half4 src = input.eval(coord);\n" +
+            "    half4 src = cameraInput.eval(coord);\n" +
             "    half3 mapped = sampleLut(float3(src.rgb));\n" +
             "    return half4(mapped, src.a);\n" +
             "}\n";
@@ -99,7 +99,7 @@ public final class LomoFilter {
         lutShader.setFilterMode(BitmapShader.FILTER_MODE_NEAREST);
         runtimeShader.setInputBuffer("lut", lutShader);
         runtimeShader.setFloatUniform("lutN", (float) LUT_SIZE);
-        view.setRenderEffect(RenderEffect.createRuntimeShaderEffect(runtimeShader, "input"));
+        view.setRenderEffect(RenderEffect.createRuntimeShaderEffect(runtimeShader, "cameraInput"));
     }
 
     /** Apply the identical LUT to a captured bitmap in-place. */
