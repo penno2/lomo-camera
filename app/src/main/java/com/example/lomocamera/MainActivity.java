@@ -22,6 +22,7 @@ import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.MeteringRectangle;
 import android.hardware.camera2.params.StreamConfigurationMap;
@@ -77,6 +78,11 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_CAMERA_PERMISSION = 1001;
     private static final int MAX_PREVIEW_WIDTH = 1920;
     private static final int MAX_PREVIEW_HEIGHT = 1080;
+    private static final long PRECAPTURE_TIMEOUT_MS = 1800L;
+
+    private static final int CAPTURE_STATE_PREVIEW = 0;
+    private static final int CAPTURE_STATE_WAITING_PRECAPTURE = 1;
+    private static final int CAPTURE_STATE_WAITING_NON_PRECAPTURE = 2;
 
     private enum FlashMode { OFF, AUTO, ON }
 
@@ -104,6 +110,7 @@ public final class MainActivity extends Activity {
     private Surface previewSurface;
     private boolean flashAvailable;
     private FlashMode flashMode = FlashMode.OFF;
+    private FlashMode captureFlashMode = FlashMode.OFF;
     private Range<Float> zoomRange = new Range<>(1f, 1f);
     private float zoomRatio = 1f;
 
@@ -116,6 +123,8 @@ public final class MainActivity extends Activity {
     private final Semaphore cameraOpenCloseLock = new Semaphore(1);
     private volatile boolean cameraOpening;
     private boolean processingPhoto;
+    private int captureState = CAPTURE_STATE_PREVIEW;
+    private Runnable precaptureTimeout;
 
     private float downX;
     private float downY;
@@ -174,6 +183,21 @@ public final class MainActivity extends Activity {
             if (cameraDevice == camera) cameraDevice = null;
         }
     };
+
+    /**
+     * The preview callback doubles as the small capture state machine used for flash.
+     * Camera2 flash AE is a two-stage process: request AE precapture, wait for the
+     * precapture sequence to finish, then issue the actual JPEG request.
+     */
+    private final CameraCaptureSession.CaptureCallback cameraCaptureCallback =
+            new CameraCaptureSession.CaptureCallback() {
+                @Override
+                public void onCaptureCompleted(CameraCaptureSession session,
+                                               CaptureRequest request,
+                                               TotalCaptureResult result) {
+                    processCaptureResult(result);
+                }
+            };
 
     private final ImageReader.OnImageAvailableListener imageAvailableListener = reader -> {
         Image image = null;
@@ -573,7 +597,7 @@ public final class MainActivity extends Activity {
                             captureSession = session;
                             try {
                                 captureSession.setRepeatingRequest(previewRequestBuilder.build(),
-                                        null, cameraHandler);
+                                        cameraCaptureCallback, cameraHandler);
                             } catch (CameraAccessException e) {
                                 Log.e(TAG, "Unable to start preview", e);
                             }
@@ -599,6 +623,8 @@ public final class MainActivity extends Activity {
     }
 
     private void closeCamera() {
+        cancelPrecaptureTimeout();
+        captureState = CAPTURE_STATE_PREVIEW;
         try {
             cameraOpenCloseLock.acquire();
             if (captureSession != null) {
@@ -633,7 +659,7 @@ public final class MainActivity extends Activity {
     }
 
     private void cycleFlashMode() {
-        if (!flashAvailable) return;
+        if (processingPhoto || !flashAvailable) return;
         switch (flashMode) {
             case OFF: flashMode = FlashMode.AUTO; break;
             case AUTO: flashMode = FlashMode.ON; break;
@@ -643,7 +669,8 @@ public final class MainActivity extends Activity {
         if (previewRequestBuilder != null && captureSession != null) {
             try {
                 applyFlash(previewRequestBuilder);
-                captureSession.setRepeatingRequest(previewRequestBuilder.build(), null, cameraHandler);
+                captureSession.setRepeatingRequest(previewRequestBuilder.build(),
+                        cameraCaptureCallback, cameraHandler);
             } catch (CameraAccessException e) {
                 Log.e(TAG, "Unable to update flash", e);
             }
@@ -670,6 +697,7 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /** Configure the preview/AE pipeline for the selected flash mode. */
     private void applyFlash(CaptureRequest.Builder builder) {
         if (!flashAvailable) {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
@@ -683,9 +711,13 @@ public final class MainActivity extends Activity {
                 break;
             case AUTO:
                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH);
+                builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF);
                 break;
             case ON:
+                // Keep AE aware that the final shot will use flash. The actual still request
+                // uses FLASH_MODE_SINGLE so ON really means "fire", independent of AE's choice.
                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH);
+                builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF);
                 break;
         }
     }
@@ -697,7 +729,8 @@ public final class MainActivity extends Activity {
         if (previewRequestBuilder == null || captureSession == null) return;
         try {
             applyZoom(previewRequestBuilder);
-            captureSession.setRepeatingRequest(previewRequestBuilder.build(), null, cameraHandler);
+            captureSession.setRepeatingRequest(previewRequestBuilder.build(),
+                    cameraCaptureCallback, cameraHandler);
         } catch (CameraAccessException e) {
             Log.e(TAG, "Unable to zoom", e);
         }
@@ -784,7 +817,8 @@ public final class MainActivity extends Activity {
                                         CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
                                 previewRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE,
                                         CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-                                session.setRepeatingRequest(previewRequestBuilder.build(), null, cameraHandler);
+                                session.setRepeatingRequest(previewRequestBuilder.build(),
+                                        cameraCaptureCallback, cameraHandler);
                             } catch (CameraAccessException e) {
                                 Log.e(TAG, "Unable to resume autofocus", e);
                             }
@@ -799,14 +833,97 @@ public final class MainActivity extends Activity {
         if (processingPhoto || cameraDevice == null || captureSession == null || imageReader == null) return;
         processingPhoto = true;
         shutterButton.setEnabled(false);
+        captureFlashMode = flashMode;
+
+        if (!flashAvailable || captureFlashMode == FlashMode.OFF) {
+            captureStillPicture();
+        } else {
+            startPrecaptureSequence();
+        }
+    }
+
+    /** Trigger AE's flash precapture metering before the real still request. */
+    private void startPrecaptureSequence() {
+        if (captureSession == null || previewRequestBuilder == null || cameraHandler == null) {
+            finishPhotoProcessing("Capture failed");
+            return;
+        }
+        try {
+            captureState = CAPTURE_STATE_WAITING_PRECAPTURE;
+
+            if (captureFlashMode == FlashMode.AUTO) {
+                previewRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE,
+                        CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH);
+            } else {
+                previewRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE,
+                        CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH);
+            }
+            previewRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF);
+            previewRequestBuilder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
+                    CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_START);
+
+            Log.i(TAG, "Starting AE precapture for flash=" + captureFlashMode);
+            captureSession.capture(previewRequestBuilder.build(), cameraCaptureCallback, cameraHandler);
+
+            // START is a one-shot trigger; don't leave it asserted on later requests.
+            previewRequestBuilder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
+                    CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_IDLE);
+
+            cancelPrecaptureTimeout();
+            precaptureTimeout = () -> {
+                if (processingPhoto && captureState != CAPTURE_STATE_PREVIEW) {
+                    Log.w(TAG, "AE precapture timed out; taking photo anyway");
+                    captureState = CAPTURE_STATE_PREVIEW;
+                    captureStillPicture();
+                }
+            };
+            cameraHandler.postDelayed(precaptureTimeout, PRECAPTURE_TIMEOUT_MS);
+        } catch (CameraAccessException | RuntimeException e) {
+            Log.e(TAG, "Unable to start flash precapture", e);
+            captureState = CAPTURE_STATE_PREVIEW;
+            captureStillPicture();
+        }
+    }
+
+    private void processCaptureResult(CaptureResult result) {
+        if (!processingPhoto || captureState == CAPTURE_STATE_PREVIEW) return;
+
+        Integer aeState = result.get(CaptureResult.CONTROL_AE_STATE);
+        if (captureState == CAPTURE_STATE_WAITING_PRECAPTURE) {
+            if (aeState == null ||
+                    aeState == CaptureResult.CONTROL_AE_STATE_PRECAPTURE ||
+                    aeState == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED ||
+                    aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
+                    aeState == CaptureResult.CONTROL_AE_STATE_LOCKED) {
+                captureState = CAPTURE_STATE_WAITING_NON_PRECAPTURE;
+            }
+            return;
+        }
+
+        if (captureState == CAPTURE_STATE_WAITING_NON_PRECAPTURE &&
+                (aeState == null || aeState != CaptureResult.CONTROL_AE_STATE_PRECAPTURE)) {
+            captureState = CAPTURE_STATE_PREVIEW;
+            captureStillPicture();
+        }
+    }
+
+    private void captureStillPicture() {
+        cancelPrecaptureTimeout();
+        if (cameraDevice == null || captureSession == null || imageReader == null) {
+            runOnUiThread(() -> finishPhotoProcessing("Capture failed"));
+            return;
+        }
+
         try {
             CaptureRequest.Builder captureBuilder =
                     cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
             captureBuilder.addTarget(imageReader.getSurface());
+            captureBuilder.set(CaptureRequest.CONTROL_CAPTURE_INTENT,
+                    CaptureRequest.CONTROL_CAPTURE_INTENT_STILL_CAPTURE);
             captureBuilder.set(CaptureRequest.CONTROL_AF_MODE,
                     CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
             applyZoom(captureBuilder);
-            applyFlash(captureBuilder);
+            applyStillFlash(captureBuilder, captureFlashMode);
             captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, getJpegOrientation());
             captureBuilder.set(CaptureRequest.JPEG_QUALITY, (byte) 95);
 
@@ -817,6 +934,9 @@ public final class MainActivity extends Activity {
                         public void onCaptureCompleted(CameraCaptureSession session,
                                                        CaptureRequest request,
                                                        TotalCaptureResult result) {
+                            Integer flashState = result.get(CaptureResult.FLASH_STATE);
+                            Log.i(TAG, "Still capture flash=" + captureFlashMode +
+                                    " result=" + flashStateName(flashState));
                             resumePreview();
                         }
 
@@ -824,27 +944,73 @@ public final class MainActivity extends Activity {
                         public void onCaptureFailed(CameraCaptureSession session,
                                                     CaptureRequest request,
                                                     android.hardware.camera2.CaptureFailure failure) {
+                            Log.e(TAG, "Still capture request failed: reason=" + failure.getReason());
                             resumePreview();
                             runOnUiThread(() -> finishPhotoProcessing("Capture failed"));
                         }
                     }, cameraHandler);
-        } catch (CameraAccessException e) {
+        } catch (CameraAccessException | IllegalStateException e) {
             Log.e(TAG, "Still capture failed", e);
-            finishPhotoProcessing("Capture failed");
+            resumePreview();
+            runOnUiThread(() -> finishPhotoProcessing("Capture failed"));
+        }
+    }
+
+    private void applyStillFlash(CaptureRequest.Builder builder, FlashMode mode) {
+        if (!flashAvailable || mode == FlashMode.OFF) {
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+            builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF);
+            return;
+        }
+
+        if (mode == FlashMode.AUTO) {
+            // AE decides whether flash is necessary, after the precapture pass above.
+            builder.set(CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH);
+            builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF);
+        } else {
+            // Forced flash: SINGLE means physically fire for this still, regardless of
+            // whether AE independently thinks a flash is required.
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+            builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_SINGLE);
+        }
+    }
+
+    private void cancelPrecaptureTimeout() {
+        if (precaptureTimeout != null && cameraHandler != null) {
+            cameraHandler.removeCallbacks(precaptureTimeout);
+        }
+        precaptureTimeout = null;
+    }
+
+    private static String flashStateName(Integer state) {
+        if (state == null) return "UNKNOWN";
+        switch (state) {
+            case CaptureResult.FLASH_STATE_UNAVAILABLE: return "UNAVAILABLE";
+            case CaptureResult.FLASH_STATE_CHARGING: return "CHARGING";
+            case CaptureResult.FLASH_STATE_READY: return "READY";
+            case CaptureResult.FLASH_STATE_FIRED: return "FIRED";
+            case CaptureResult.FLASH_STATE_PARTIAL: return "PARTIAL";
+            default: return Integer.toString(state);
         }
     }
 
     private void resumePreview() {
+        cancelPrecaptureTimeout();
+        captureState = CAPTURE_STATE_PREVIEW;
         if (captureSession == null || previewRequestBuilder == null) return;
         try {
             previewRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE,
                     CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
             previewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
                     CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
+            previewRequestBuilder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
+                    CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_IDLE);
             applyZoom(previewRequestBuilder);
             applyFlash(previewRequestBuilder);
-            captureSession.setRepeatingRequest(previewRequestBuilder.build(), null, cameraHandler);
-        } catch (CameraAccessException e) {
+            captureSession.setRepeatingRequest(previewRequestBuilder.build(),
+                    cameraCaptureCallback, cameraHandler);
+        } catch (CameraAccessException | IllegalStateException e) {
             Log.e(TAG, "Unable to resume preview", e);
         }
     }
@@ -969,6 +1135,8 @@ public final class MainActivity extends Activity {
     }
 
     private void finishPhotoProcessing(String message) {
+        cancelPrecaptureTimeout();
+        captureState = CAPTURE_STATE_PREVIEW;
         processingPhoto = false;
         if (shutterButton != null) shutterButton.setEnabled(true);
         showToast(message);
