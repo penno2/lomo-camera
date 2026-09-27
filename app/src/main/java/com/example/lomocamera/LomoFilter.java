@@ -7,21 +7,41 @@ import android.graphics.BitmapShader;
 import android.graphics.RenderEffect;
 import android.graphics.RuntimeShader;
 import android.graphics.Shader;
+import android.util.Log;
 import android.view.TextureView;
 
 /**
  * Camera ZOOM FX-inspired Lomo colour transform.
  *
  * The runtime transform is a compact 17x17x17 RGB LUT resampled from a 33x33x33
- * calibration LUT fitted from matched input/output photographs. It contains no Camera ZOOM FX code or assets; only a colour mapping
- * inferred from the user's own image pairs.
+ * calibration LUT fitted from matched input/output photographs. It contains no Camera
+ * ZOOM FX code or assets; only a colour mapping inferred from the user's own image pairs.
  */
 public final class LomoFilter {
+    private static final String TAG = "LomoCamera";
+
     public static final int LUT_SIZE = 17;
+
+    /*
+     * The saved-photo path used to perform full trilinear interpolation through the
+     * 17-cube for every single photo pixel. That is accurate, but spectacularly slow
+     * for a 40-50 MP image.
+     *
+     * Instead, pre-expand the fitted transform once into a 64x64x64 table (~1 MiB).
+     * Saving a photo then needs only one array lookup per pixel. Six input bits per
+     * channel means the maximum input quantisation is only four 8-bit code values,
+     * while retaining the original trilinear LUT when the fast table is constructed.
+     */
+    private static final int FAST_BITS = 6;
+    private static final int FAST_SIZE = 1 << FAST_BITS;       // 64
+    private static final int FAST_MASK = FAST_SIZE - 1;
+    private static final int FAST_G_SHIFT = FAST_BITS;
+    private static final int FAST_R_SHIFT = FAST_BITS * 2;
 
     private final Bitmap lutBitmap;
     private final int[] lutPixels;
     private final int lutWidth;
+    private final int[] fastLut = new int[FAST_SIZE * FAST_SIZE * FAST_SIZE];
 
     private final int[] low = new int[256];
     private final int[] high = new int[256];
@@ -90,6 +110,11 @@ public final class LomoFilter {
             high[v] = l + 1;
             fraction[v] = Math.max(0f, Math.min(1f, p - l));
         }
+
+        long start = System.nanoTime();
+        buildFastLut();
+        Log.i(TAG, String.format("Built fast 64-cube Lomo LUT in %.1f ms",
+                elapsedMs(start)));
     }
 
     /** Apply the LUT live to a TextureView using an Android 13+ RuntimeShader. */
@@ -102,12 +127,13 @@ public final class LomoFilter {
         view.setRenderEffect(RenderEffect.createRuntimeShaderEffect(runtimeShader, "cameraInput"));
     }
 
-    /** Apply the identical LUT to a captured bitmap in-place. */
+    /** Apply a high-accuracy pre-expanded version of the LUT to a captured bitmap in-place. */
     public void applyToBitmap(Bitmap bitmap) {
         if (bitmap == null) return;
+        final long start = System.nanoTime();
         final int width = bitmap.getWidth();
         final int height = bitmap.getHeight();
-        final int chunkRows = 96;
+        final int chunkRows = 192;
         int[] pixels = new int[width * Math.min(chunkRows, height)];
 
         for (int top = 0; top < height; top += chunkRows) {
@@ -116,13 +142,43 @@ public final class LomoFilter {
             if (pixels.length < count) pixels = new int[count];
             bitmap.getPixels(pixels, 0, width, 0, top, width, rows);
             for (int i = 0; i < count; i++) {
-                pixels[i] = mapColor(pixels[i]);
+                int c = pixels[i];
+                int r6 = (c >>> 18) & FAST_MASK;
+                int g6 = (c >>> 10) & FAST_MASK;
+                int b6 = (c >>> 2) & FAST_MASK;
+                int mapped = fastLut[(r6 << FAST_R_SHIFT) | (g6 << FAST_G_SHIFT) | b6];
+                pixels[i] = (c & 0xff000000) | mapped;
             }
             bitmap.setPixels(pixels, 0, width, 0, top, width, rows);
         }
+
+        double ms = elapsedMs(start);
+        double mp = (width * (double) height) / 1_000_000.0;
+        Log.i(TAG, String.format("Lomo LUT: %dx%d (%.1f MP) in %.1f ms (%.1f MP/s)",
+                width, height, mp, ms, mp / Math.max(0.001, ms / 1000.0)));
     }
 
-    private int mapColor(int argb) {
+    private void buildFastLut() {
+        for (int r6 = 0; r6 < FAST_SIZE; r6++) {
+            int r = representative8Bit(r6);
+            for (int g6 = 0; g6 < FAST_SIZE; g6++) {
+                int g = representative8Bit(g6);
+                for (int b6 = 0; b6 < FAST_SIZE; b6++) {
+                    int b = representative8Bit(b6);
+                    int mapped = mapColorTrilinear(0xff000000 | (r << 16) | (g << 8) | b);
+                    fastLut[(r6 << FAST_R_SHIFT) | (g6 << FAST_G_SHIFT) | b6] =
+                            mapped & 0x00ffffff;
+                }
+            }
+        }
+    }
+
+    private static int representative8Bit(int sixBit) {
+        // Centre of each four-value input bucket; keep the final bucket pinned to 255.
+        return sixBit == FAST_MASK ? 255 : (sixBit << 2) + 2;
+    }
+
+    private int mapColorTrilinear(int argb) {
         int a = (argb >>> 24) & 0xff;
         int r = (argb >>> 16) & 0xff;
         int g = (argb >>> 8) & 0xff;
@@ -170,6 +226,10 @@ public final class LomoFilter {
         float c0 = c00 + (c10 - c00) * fy;
         float c1 = c01 + (c11 - c01) * fy;
         return c0 + (c1 - c0) * fz;
+    }
+
+    private static double elapsedMs(long startNs) {
+        return (System.nanoTime() - startNs) / 1_000_000.0;
     }
 
     private static int red(int c) { return (c >>> 16) & 0xff; }
