@@ -1,10 +1,14 @@
 package com.example.lomocamera;
 
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
 /** Simple camera shutter button drawn without bitmap resources. */
 public final class ShutterButton extends View {
@@ -21,6 +25,49 @@ public final class ShutterButton extends View {
         setClickable(true);
         setFocusable(true);
         setContentDescription("Take photo");
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        post(this::updatePlacement);
+    }
+
+    @Override
+    protected void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        post(this::updatePlacement);
+    }
+
+    /**
+     * In portrait the shutter sits at the physical bottom centre. When the device is
+     * rotated to landscape, keep that physical position by moving the shutter to the
+     * right-hand centre instead of leaving it at landscape "bottom centre".
+     */
+    private void updatePlacement() {
+        ViewGroup.LayoutParams raw = getLayoutParams();
+        if (!(raw instanceof FrameLayout.LayoutParams)) return;
+
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) raw;
+        lp.leftMargin = 0;
+        lp.topMargin = 0;
+        lp.rightMargin = 0;
+        lp.bottomMargin = 0;
+
+        boolean landscape = getResources().getConfiguration().orientation ==
+                Configuration.ORIENTATION_LANDSCAPE;
+        if (landscape) {
+            lp.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
+            lp.rightMargin = dp(30);
+        } else {
+            lp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+            lp.bottomMargin = dp(30);
+        }
+        setLayoutParams(lp);
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     @Override
