@@ -5,7 +5,7 @@ A tiny Android camera whose only look is the Camera ZOOM FX-inspired Lomo treatm
 ## What it does
 
 - opens straight into the filtered camera
-- live Lomo preview (Android `RuntimeShader` + the fitted 33×33×33 RGB LUT)
+- live Lomo preview (Android `RuntimeShader` + a compact 17×17×17 runtime LUT)
 - full-resolution JPEG capture through Camera2
 - applies the same LUT to the saved photo
 - tap to focus
@@ -52,13 +52,13 @@ If Android Studio asks for SDK components, install **Android SDK Platform 36** a
 
 ## Calibration
 
-The LUT is not copied from Camera ZOOM FX. It was fitted from corresponding pixels in three user-supplied original → Camera ZOOM FX Lomo image pairs. The fitted mapping captures the characteristic cool/blue shadows, warm/yellow highlights, saturated greens/reds and contrast shift seen in those examples.
+The LUT is not copied from Camera ZOOM FX. A 33×33×33 calibration LUT was fitted from corresponding pixels in three user-supplied original → Camera ZOOM FX Lomo image pairs. The app uses a compact 17×17×17 resampling of that fitted mapping; trilinear interpolation restores smooth colour transitions while keeping the runtime asset small. It captures the characteristic cool/blue shadows, warm/yellow highlights, saturated greens/reds and contrast shift seen in those examples.
 
-The calibration asset is:
+The runtime calibration asset is:
 
 `app/src/main/res/drawable-nodpi/lomo_lut.png`
 
-Atlas layout is 33 blue slices laid left-to-right; within each slice X=red and Y=green. Both the live AGSL shader and the saved-image CPU path use trilinear interpolation through that same LUT.
+Atlas layout is 17 blue slices laid left-to-right; within each slice X=red and Y=green. Both the live AGSL shader and the saved-image CPU path use trilinear interpolation through that same LUT.
 
 ## First-test checklist
 
