@@ -5,13 +5,18 @@ import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.drawable.ColorDrawable;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 /** Simple camera shutter button drawn without bitmap resources. */
 public final class ShutterButton extends View {
+    private static final int CAPTURE_FLASH_ALPHA = 46;
+    private static final long CAPTURE_FLASH_MS = 65L;
+
     private final Paint outer = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint inner = new Paint(Paint.ANTI_ALIAS_FLAG);
 
@@ -68,6 +73,27 @@ public final class ShutterButton extends View {
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    @Override
+    public boolean performClick() {
+        // A tiny click gives immediate confirmation without needing VIBRATE permission.
+        // Respect the user's system haptic setting by using the normal View API.
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+        flashScreen();
+        return super.performClick();
+    }
+
+    /** Very brief, low-opacity white flash over the whole camera window. */
+    private void flashScreen() {
+        View root = getRootView();
+        if (root == null || root.getWidth() <= 0 || root.getHeight() <= 0) return;
+
+        ColorDrawable flash = new ColorDrawable(Color.WHITE);
+        flash.setAlpha(CAPTURE_FLASH_ALPHA);
+        flash.setBounds(0, 0, root.getWidth(), root.getHeight());
+        root.getOverlay().add(flash);
+        root.postDelayed(() -> root.getOverlay().remove(flash), CAPTURE_FLASH_MS);
     }
 
     @Override
