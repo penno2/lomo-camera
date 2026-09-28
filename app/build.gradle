@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace 'com.example.lomocamera'
+    namespace 'com.harristownapps.lomocamera'
     compileSdk 36
 
     defaultConfig {
-        applicationId 'com.example.lomocamera'
+        applicationId 'com.harristownapps.lomocamera'
         minSdk 33
         targetSdk 36
         versionCode 1
