@@ -1,77 +1,78 @@
-# Lomo Camera v0.1
+# Lomo Camera
 
-A tiny Android camera whose only look is the Camera ZOOM FX-inspired Lomo treatment we calibrated from the supplied Pixel 8 photo pairs.
+A tiny Android camera that does one thing: it shoots vivid, cross-processed Lomo-style photos.
 
-## What it does
+Lomo Camera opens straight into the filtered view and deliberately avoids becoming a general-purpose camera suite. There is no filter picker, gallery browser, account, advertising, analytics or network code.
 
-- opens straight into the filtered camera
-- live Lomo preview (Android `RuntimeShader` + a compact 17×17×17 runtime LUT)
+## Features
+
+- live Lomo-style preview using Android `RuntimeShader`
 - full-resolution JPEG capture through Camera2
-- applies the same LUT to the saved photo
+- the same calibrated colour treatment applied to saved photos
 - tap to focus
-- pinch to zoom (including the logical camera's sub-1× range when Android exposes it)
-- flash: OFF → AUTO → ON
+- pinch to zoom
+- flash off / auto / on
 - front/rear camera switch
-- saves to `DCIM/Lomo`
-
-That's it. There is no filter picker, gallery, account, analytics or network code.
+- portrait and landscape controls
+- brief screen-flash and haptic shutter feedback
+- photos saved to `DCIM/Lomo`
 
 ## Privacy
 
-The manifest requests **only**:
+The manifest requests only:
 
 ```xml
 <uses-permission android:name="android.permission.CAMERA" />
 ```
 
-There is deliberately **no `INTERNET` permission** and no location permission. Photos are written through Android MediaStore, so no broad storage permission is needed on modern Android.
+There is deliberately no `INTERNET` permission and no location permission. Photos are written through Android MediaStore, so no broad storage permission is needed on modern Android.
 
-## Device / Android target
+Application ID: `com.harristownapps.lomocamera`
 
-v0.1 intentionally targets Android 13+ (`minSdk 33`) because the live preview uses `RuntimeShader`. It is aimed first at the Pixel 8 / GrapheneOS setup it was designed for.
+## Android target
 
-## Build in Android Studio
+Lomo Camera targets Android 13+ (`minSdk 33`) because the live preview uses `RuntimeShader`. It was developed primarily on a Pixel 8 running GrapheneOS and has also been tested on a Samsung Galaxy A35.
 
-This is a standard Java Android Studio project with no third-party runtime dependencies.
+## Build
+
+This is a Java/Gradle Android project with no third-party runtime dependencies.
 
 Current build settings:
 
-- Android Gradle Plugin: 9.4.1
-- Gradle: 9.6.0
+- Android Gradle Plugin: 9.2.1
+- Gradle: 9.4.1
 - compileSdk: 36
 - targetSdk: 36
 - Java: 17
 
-Open the `LomoCamera` folder in Android Studio, let Gradle sync, then run the `app` configuration on the phone.
+Open the project in Android Studio, let Gradle sync, then run the `app` configuration on a connected Android device.
 
-If Android Studio asks for SDK components, install **Android SDK Platform 36** and **Build Tools 36.0.0**.
+The GitHub Actions workflow at `.github/workflows/android.yml` also builds a debug APK and uploads it as an artifact.
 
-## One-click GitHub build
+## Colour calibration
 
-`.github/workflows/android.yml` is included. Push this project to a GitHub repo and run **Build Android APK** from Actions (or push to `main`/`master`). The workflow uploads `LomoCamera-debug` containing `app-debug.apk`.
+The LUT is not copied from any third-party application. A calibration mapping was fitted from corresponding pixels in user-supplied before/after photographs, then implemented independently in Lomo Camera.
 
-## Calibration
-
-The LUT is not copied from Camera ZOOM FX. A 33×33×33 calibration LUT was fitted from corresponding pixels in three user-supplied original → Camera ZOOM FX Lomo image pairs. The app uses a compact 17×17×17 resampling of that fitted mapping; trilinear interpolation restores smooth colour transitions while keeping the runtime asset small. It captures the characteristic cool/blue shadows, warm/yellow highlights, saturated greens/reds and contrast shift seen in those examples.
-
-The runtime calibration asset is:
+The app ships a compact 17×17×17 RGB LUT at:
 
 `app/src/main/res/drawable-nodpi/lomo_lut.png`
 
-Atlas layout is 17 blue slices laid left-to-right; within each slice X=red and Y=green. Both the live AGSL shader and the saved-image CPU path use trilinear interpolation through that same LUT.
+The live AGSL shader samples it with trilinear interpolation. For saved photographs the compact LUT is expanded to a 64×64×64 in-memory lookup table for fast full-resolution processing.
 
-## First-test checklist
+See [`docs/LUT.md`](docs/LUT.md) for the clean-room provenance and technical details.
 
-On the Pixel 8:
+## Licence
 
-1. Launch and grant Camera permission.
-2. Confirm the live preview has the expected Lomo look.
-3. Take one outdoor and one indoor photo.
-4. Check `DCIM/Lomo` for full-resolution images.
-5. Compare against Camera ZOOM FX. The LUT is deliberately easy to regenerate/tune if the live display colour-management makes the preview differ from the saved JPEG.
+Lomo Camera is released under the GNU General Public License v3.0 only (`GPL-3.0-only`). See [`LICENSE`](LICENSE).
 
-## Known v0.1 limitations
+## F-Droid
 
-- Full-resolution LUT processing is CPU-side after capture, so saving can take a moment. The shutter disables until processing finishes.
-- Re-encoding the processed JPEG does not currently preserve the camera's full original EXIF metadata.
-- The live filter is calibrated in sRGB. Android display colour management can make the on-screen preview differ slightly from the final JPEG; that is exactly what the first on-device test is for.
+Upstream store metadata is kept under `fastlane/metadata/android/en-US/`. Release/submission notes are in [`docs/F-DROID.md`](docs/F-DROID.md).
+
+The remaining binary store artwork (icon and screenshots) should be added before tagging `v1.0`.
+
+## Current release status
+
+The codebase is being prepared for the 1.0 release. The release version is `versionName 1.0`, `versionCode 1`.
+
+Known limitation: processed JPEGs do not yet preserve the complete original camera EXIF set such as ISO, exposure time and aperture. Richer photographic EXIF is planned as a later improvement.

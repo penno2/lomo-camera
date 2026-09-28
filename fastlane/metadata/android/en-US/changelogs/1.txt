@@ -1,0 +1,3 @@
+Initial 1.0 release.
+
+A dedicated Lomo-style camera with live filtered preview, full-resolution capture, tap-to-focus, pinch-to-zoom, flash off/auto/on, front/rear camera switching, orientation-aware controls, capture feedback, and local saving to DCIM/Lomo. No network or location permission.
