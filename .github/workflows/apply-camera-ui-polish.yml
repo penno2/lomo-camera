@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   patch:
-    if: github.event.head_commit.message == 'Fix one-shot UI polish workflow'
+    if: github.event.head_commit.message == 'Run UI polish migration'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -17,6 +17,12 @@ jobs:
           fetch-depth: 0
 
       - name: Apply camera-style controls and saved indicator
-        shell: bash
+        run: python tools/apply_ui_polish.py
+
+      - name: Commit UI polish
         run: |
-          echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpwYXRoID0gUGF0aCgnYXBwL3NyYy9tYWluL2phdmEvY29tL2V4YW1wbGUvbG9tb2NhbWVyYS9NYWluQWN0aXZpdHkuamF2YScpCnMgPSBwYXRoLnJlYWRfdGV4dCgpCgpkZWYgcmVwbGFjZV9vbmNlKG9sZCwgbmV3LCBsYWJlbCk6CiAgICBnbG9iYWwgcwogICAgY291bnQgPSBzLmNvdW50KG9sZCkKICAgIGlmIGNvdW50ICE9IDE6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdChmJ3tsYWJlbH06IGV4cGVjdGVkIG9uZSBtYXRjaCwgZm91bmQge2NvdW50fScpCiAgICBzID0gcy5yZXBsYWNlKG9sZCwgbmV3LCAxKQoKcmVwbGFjZV9vbmNlKAogICAgJ2ltcG9ydCBhbmRyb2lkLndpZGdldC5GcmFtZUxheW91dDtcbmltcG9ydCBhbmRyb2lkLndpZGdldC5MaW5lYXJMYXlvdXQ7XG5pbXBvcnQgYW5kcm9pZC53aWRnZXQuVGV4dFZpZXc7XG5pbXBvcnQgYW5kcm9pZC53aWRnZXQuVG9hc3Q7JywKICAgICdpbXBvcnQgYW5kcm9pZC53aWRnZXQuRnJhbWVMYXlvdXQ7XG5pbXBvcnQgYW5kcm9pZC53aWRnZXQuSW1hZ2VCdXR0b247XG5pbXBvcnQgYW5kcm9pZC53aWRnZXQuSW1hZ2VWaWV3O1xuaW1wb3J0IGFuZHJvaWQud2lkZ2V0LkxpbmVhckxheW91dDtcbmltcG9ydCBhbmRyb2lkLndpZGdldC5UZXh0VmlldztcbmltcG9ydCBhbmRyb2lkLndpZGdldC5Ub2FzdDsnLAogICAgJ3dpZGdldCBpbXBvcnRzJykKCnJlcGxhY2Vfb25jZSgKICAgICcgICAgcHJpdmF0ZSBTaHV0dGVyQnV0dG9uIHNodXR0ZXJCdXR0b247XG4gICAgcHJpdmF0ZSBUZXh0VmlldyBmbGFzaEJ1dHRvbjtcbiAgICBwcml2YXRlIFRleHRWaWV3IHN3aXRjaEJ1dHRvbjsnLAogICAgJyAgICBwcml2YXRlIFNodXR0ZXJCdXR0b24gc2h1dHRlckJ1dHRvbjtcbiAgICBwcml2YXRlIEltYWdlQnV0dG9uIGZsYXNoQnV0dG9uO1xuICAgIHByaXZhdGUgSW1hZ2VCdXR0b24gc3dpdGNoQnV0dG9uO1xuICAgIHByaXZhdGUgRnJhbWVMYXlvdXQgcm9vdFZpZXc7XG4gICAgcHJpdmF0ZSBUZXh0VmlldyBzYXZlZEluZGljYXRvcjsnLAogICAgJ2NvbnRyb2wgZmllbGRzJykKCnJlcGxhY2Vfb25jZSgKICAgICcgICAgICAgIEZyYW1lTGF5b3V0IHJvb3QgPSBuZXcgRnJhbWVMYXlvdXQodGhpcyk7XG4gICAgICAgIHJvb3Quc2V0QmFja2dyb3VuZENvbG9yKENvbG9yLkJMQUNLKTsnLAogICAgJyAgICAgICAgcm9vdFZpZXcgPSBuZXcgRnJhbWVMYXlvdXQodGhpcyk7XG4gICAgICAgIEZyYW1lTGF5b3V0IHJvb3QgPSByb290VmlldDtCIGNvbG9yLnNldEJhY2tncm91bmQoQ29sb3IuQkxBQ0spOycsCiAgICAncm9vdCB2aWV3JykK
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/example/lomocamera/MainActivity.java app/src/main/res/drawable
+          git commit -m "Use camera-style flash and switch controls"
+          git push
