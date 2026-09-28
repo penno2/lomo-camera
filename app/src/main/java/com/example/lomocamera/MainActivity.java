@@ -48,6 +48,8 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -89,8 +91,10 @@ public final class MainActivity extends Activity {
     private AutoFitTextureView textureView;
     private FocusIndicatorView focusIndicator;
     private ShutterButton shutterButton;
-    private TextView flashButton;
-    private TextView switchButton;
+    private ImageButton flashButton;
+    private ImageButton switchButton;
+    private FrameLayout rootView;
+    private TextView savedIndicator;
 
     private LomoFilter lomoFilter;
     private ScaleGestureDetector scaleGestureDetector;
@@ -229,7 +233,8 @@ public final class MainActivity extends Activity {
     }
 
     private void buildUi() {
-        FrameLayout root = new FrameLayout(this);
+        rootView = new FrameLayout(this);
+        FrameLayout root = rootView;
         root.setBackgroundColor(Color.BLACK);
 
         textureView = new AutoFitTextureView(this);
@@ -248,12 +253,11 @@ public final class MainActivity extends Activity {
         topControls.setOrientation(LinearLayout.HORIZONTAL);
         topControls.setGravity(Gravity.CENTER_VERTICAL);
 
-        flashButton = makeControlButton("OFF", "Flash off");
+        flashButton = makeIconControlButton(R.drawable.ic_flash_off, "Flash off");
         flashButton.setOnClickListener(v -> cycleFlashMode());
         topControls.addView(flashButton, squareLayout(58));
 
-        switchButton = makeControlButton("↻", "Switch camera");
-        switchButton.setTextSize(25f);
+        switchButton = makeIconControlButton(R.drawable.ic_camera_switch, "Switch camera");
         switchButton.setOnClickListener(v -> switchCamera());
         LinearLayout.LayoutParams switchLp = squareLayout(58);
         switchLp.leftMargin = dp(10);
@@ -276,16 +280,15 @@ public final class MainActivity extends Activity {
         setContentView(root);
     }
 
-    private TextView makeControlButton(String text, String contentDescription) {
-        TextView v = new TextView(this);
-        v.setText(text);
-        v.setTextColor(Color.WHITE);
-        v.setTextSize(12f);
-        v.setGravity(Gravity.CENTER);
+    private ImageButton makeIconControlButton(int iconRes, String contentDescription) {
+        ImageButton v = new ImageButton(this);
+        v.setImageResource(iconRes);
+        v.setColorFilter(Color.WHITE);
+        v.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        v.setPadding(dp(14), dp(14), dp(14), dp(14));
         v.setContentDescription(contentDescription);
         v.setClickable(true);
         v.setFocusable(true);
-        v.setAllCaps(false);
         GradientDrawable bg = new GradientDrawable();
         bg.setShape(GradientDrawable.OVAL);
         bg.setColor(0x99000000);
@@ -683,15 +686,15 @@ public final class MainActivity extends Activity {
         if (!flashAvailable) return;
         switch (flashMode) {
             case OFF:
-                flashButton.setText("OFF");
+                flashButton.setImageResource(R.drawable.ic_flash_off);
                 flashButton.setContentDescription("Flash off");
                 break;
             case AUTO:
-                flashButton.setText("AUTO");
+                flashButton.setImageResource(R.drawable.ic_flash_auto);
                 flashButton.setContentDescription("Flash automatic");
                 break;
             case ON:
-                flashButton.setText("ON");
+                flashButton.setImageResource(R.drawable.ic_flash_on);
                 flashButton.setContentDescription("Flash on");
                 break;
         }
@@ -1139,7 +1142,11 @@ public final class MainActivity extends Activity {
         captureState = CAPTURE_STATE_PREVIEW;
         processingPhoto = false;
         if (shutterButton != null) shutterButton.setEnabled(true);
-        showToast(message);
+        if ("Saved to DCIM/Lomo".equals(message)) {
+            showSavedIndicator();
+        } else {
+            showToast(message);
+        }
     }
 
     private void configureTransform(int viewWidth, int viewHeight) {
@@ -1214,6 +1221,44 @@ public final class MainActivity extends Activity {
             return Long.signum((long) lhs.getWidth() * lhs.getHeight() -
                     (long) rhs.getWidth() * rhs.getHeight());
         }
+    }
+
+    private void showSavedIndicator() {
+        runOnUiThread(() -> {
+            if (rootView == null) return;
+            if (savedIndicator != null && savedIndicator.getParent() == rootView) {
+                rootView.removeView(savedIndicator);
+            }
+
+            TextView label = new TextView(this);
+            label.setText("Saved");
+            label.setTextColor(Color.WHITE);
+            label.setTextSize(14f);
+            label.setGravity(Gravity.CENTER);
+            label.setPadding(dp(18), dp(9), dp(18), dp(9));
+
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(0xCC111111);
+            bg.setCornerRadius(dp(18));
+            bg.setStroke(dp(1), 0x44FFFFFF);
+            label.setBackground(bg);
+
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+            lp.topMargin = dp(36);
+            rootView.addView(label, lp);
+            savedIndicator = label;
+
+            label.setAlpha(0f);
+            label.animate().alpha(1f).setDuration(80L).withEndAction(() ->
+                    label.animate().alpha(0f).setStartDelay(650L).setDuration(140L)
+                            .withEndAction(() -> {
+                                if (label.getParent() == rootView) rootView.removeView(label);
+                                if (savedIndicator == label) savedIndicator = null;
+                            }).start()).start();
+        });
     }
 
     private void showToast(String text) {
