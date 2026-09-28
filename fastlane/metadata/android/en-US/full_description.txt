@@ -1,0 +1,21 @@
+Lomo Camera is a deliberately tiny, single-purpose Android camera. It opens straight into a live cross-processed Lomo-style preview and saves the same look to the final JPEG.
+
+There are no filter menus, accounts, analytics, ads, gallery browser or network features. The app is designed to behave like a dedicated camera rather than a general-purpose photo editor.
+
+Features:
+• live Lomo-style preview
+• full-resolution JPEG capture
+• tap to focus
+• pinch to zoom
+• flash off, automatic and forced on
+• front/rear camera switch
+• portrait and landscape controls
+• brief visual and haptic shutter feedback
+• photos saved to DCIM/Lomo
+
+Privacy:
+Lomo Camera requests only the Android CAMERA permission. It has no INTERNET permission and does not request location access. Photos remain on the device and are saved using Android MediaStore.
+
+The colour treatment is implemented with an independently generated RGB lookup table fitted from user-supplied before/after calibration photographs. No third-party camera application code or assets are included.
+
+Lomo Camera is free software released under the GNU General Public License v3.0.
