@@ -1,4 +1,4 @@
-package com.example.lomocamera;
+package com.harristownapps.lomocamera;
 
 import android.app.Activity;
 import android.app.Application;

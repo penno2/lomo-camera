@@ -1,4 +1,4 @@
-package com.example.lomocamera;
+package com.harristownapps.lomocamera;
 
 import android.animation.ValueAnimator;
 import android.content.Context;
