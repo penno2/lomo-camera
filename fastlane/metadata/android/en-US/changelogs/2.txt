@@ -1,0 +1,2 @@
+Enable R8 optimization for release builds.
+No functional changes.
