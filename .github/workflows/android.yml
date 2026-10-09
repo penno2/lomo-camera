@@ -24,6 +24,8 @@ jobs:
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - name: Build debug APK
         run: gradle :app:assembleDebug
+      - name: Verify F-Droid release build (unsigned, R8 enabled)
+        run: gradle :app:assembleRelease
       - uses: actions/upload-artifact@v4
         with:
           name: LomoCamera-debug
