@@ -1,0 +1,4 @@
+Adjustable Lomo strength slider (0–200%) with live preview.
+100% keeps the original look; lower settings are subtler.
+Above 100% adds extra-vivid colours, contrast and darkened corners.
+The chosen strength is remembered between launches.

@@ -6,9 +6,11 @@ Lomo Camera opens straight into the filtered view and deliberately avoids becomi
 
 ## Features
 
-- live Lomo-style preview using Android `RuntimeShader`
+- live Lomo-style preview using Android `RuntimeShader`, with adjustable 0–200% Lomo strength
 - full-resolution JPEG capture through Camera2
-- the same calibrated colour treatment applied to saved photos
+- the same calibrated colour treatment applied to saved photos at the selected strength
+- 100% preserves the original colour look; 0% is unfiltered; 200% adds extra-vivid colour, contrast and vignetting
+- chosen Lomo strength is remembered between launches
 - tap to focus
 - pinch to zoom
 - flash off / auto / on
@@ -69,10 +71,10 @@ Lomo Camera is released under the GNU General Public License v3.0 only (`GPL-3.0
 
 Upstream store metadata is kept under `fastlane/metadata/android/en-US/`. Release/submission notes are in [`docs/F-DROID.md`](docs/F-DROID.md).
 
-The remaining binary store artwork (icon and screenshots) should be added before tagging `v1.0`.
+Official F-Droid packaging is published; newer upstream releases are detected from version tags in GitHub.
 
 ## Current release status
 
-The codebase is being prepared for the 1.0 release. The release version is `versionName 1.0`, `versionCode 1`.
+Version **1.1** adds a live adjustable Lomo strength slider (`versionName 1.1`, `versionCode 3`). The official F-Droid package remains `com.harristownapps.lomocamera`; debug beta builds are separately installable as `com.harristownapps.lomocamera.beta`.
 
 Known limitation: processed JPEGs do not yet preserve the complete original camera EXIF set such as ISO, exposure time and aperture. Richer photographic EXIF is planned as a later improvement.

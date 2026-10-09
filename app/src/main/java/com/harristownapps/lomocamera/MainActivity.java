@@ -51,6 +51,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -81,6 +82,8 @@ public final class MainActivity extends Activity {
     private static final int MAX_PREVIEW_WIDTH = 1920;
     private static final int MAX_PREVIEW_HEIGHT = 1080;
     private static final long PRECAPTURE_TIMEOUT_MS = 1800L;
+    private static final String PREFERENCES_NAME = "lomo_camera";
+    private static final String PREF_STRENGTH = "lomo_strength";
 
     private static final int CAPTURE_STATE_PREVIEW = 0;
     private static final int CAPTURE_STATE_WAITING_PRECAPTURE = 1;
@@ -95,6 +98,9 @@ public final class MainActivity extends Activity {
     private ImageButton switchButton;
     private FrameLayout rootView;
     private TextView savedIndicator;
+    private TextView strengthValue;
+    private volatile int lomoStrengthPercent = 100;
+    private volatile int captureStrengthPercent = 100;
 
     private LomoFilter lomoFilter;
     private ScaleGestureDetector scaleGestureDetector;
@@ -226,8 +232,11 @@ public final class MainActivity extends Activity {
         hideSystemBars();
         cameraManager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
         lomoFilter = new LomoFilter(this);
+        lomoStrengthPercent = Math.max(0, Math.min(200,
+                getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE).getInt(PREF_STRENGTH, 100)));
         buildUi();
         lomoFilter.applyToPreview(textureView);
+        lomoFilter.setPreviewStrength(lomoStrengthPercent);
         setUpGestures();
         setUpOrientationListener();
     }
@@ -276,6 +285,66 @@ public final class MainActivity extends Activity {
                 Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         shutterLp.bottomMargin = dp(30);
         root.addView(shutterButton, shutterLp);
+
+        // One compact control for the entire calibrated colour treatment.
+        // It sits just above the shutter and doesn't interfere with tap-focus/zoom.
+        LinearLayout strengthBar = new LinearLayout(this);
+        strengthBar.setOrientation(LinearLayout.HORIZONTAL);
+        strengthBar.setGravity(Gravity.CENTER_VERTICAL);
+        strengthBar.setPadding(dp(12), dp(5), dp(12), dp(5));
+        GradientDrawable strengthBackground = new GradientDrawable();
+        strengthBackground.setColor(0xB0000000);
+        strengthBackground.setCornerRadius(dp(22));
+        strengthBackground.setStroke(dp(1), 0x55FFFFFF);
+        strengthBar.setBackground(strengthBackground);
+
+        TextView strengthLabel = new TextView(this);
+        strengthLabel.setText("LOMO");
+        strengthLabel.setTextColor(Color.WHITE);
+        strengthLabel.setTextSize(12);
+        strengthLabel.setGravity(Gravity.CENTER_VERTICAL);
+        strengthBar.addView(strengthLabel, new LinearLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, dp(42)));
+
+        SeekBar strengthSlider = new SeekBar(this);
+        strengthSlider.setMax(200);
+        strengthSlider.setProgress(lomoStrengthPercent);
+        strengthSlider.setContentDescription("Lomo strength, 0 to 200 percent");
+        LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        sliderLp.leftMargin = dp(7);
+        sliderLp.rightMargin = dp(7);
+        strengthBar.addView(strengthSlider, sliderLp);
+
+        strengthValue = new TextView(this);
+        strengthValue.setText(lomoStrengthPercent + "%");
+        strengthValue.setTextColor(Color.WHITE);
+        strengthValue.setTextSize(13);
+        strengthValue.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        strengthBar.addView(strengthValue, new LinearLayout.LayoutParams(dp(45), dp(42)));
+
+        strengthSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                lomoStrengthPercent = progress;
+                strengthValue.setText(progress + "%");
+                lomoFilter.setPreviewStrength(progress);
+                textureView.invalidate();
+                if (fromUser) {
+                    getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE).edit()
+                            .putInt(PREF_STRENGTH, progress).apply();
+                }
+            }
+
+            @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+            @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+        });
+
+        FrameLayout.LayoutParams barLp = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        barLp.setMargins(dp(18), 0, dp(18), dp(132));
+        root.addView(strengthBar, barLp);
 
         setContentView(root);
     }
@@ -838,6 +907,8 @@ public final class MainActivity extends Activity {
         processingPhoto = true;
         shutterButton.setEnabled(false);
         captureFlashMode = flashMode;
+        // Snapshot strength at the shutter, even if the slider moves during JPEG processing.
+        captureStrengthPercent = lomoStrengthPercent;
 
         if (!flashAvailable || captureFlashMode == FlashMode.OFF) {
             captureStillPicture();
@@ -1065,7 +1136,7 @@ public final class MainActivity extends Activity {
                 oriented = mutable;
             }
 
-            lomoFilter.applyToBitmap(oriented);
+            lomoFilter.applyToBitmap(oriented, captureStrengthPercent);
             Uri uri = saveBitmap(oriented);
             if (uri == null) throw new IOException("MediaStore insert failed");
             runOnUiThread(() -> finishPhotoProcessing("Saved to DCIM/Lomo"));
