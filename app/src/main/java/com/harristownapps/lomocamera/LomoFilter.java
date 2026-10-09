@@ -120,8 +120,8 @@ public final class LomoFilter {
             "        blended = float3(lum) + (blended - float3(lum)) * (1.0 + 0.28 * boost);\n" +
             "        blended = clamp(blended, 0.0, 1.0);\n" +
             "        float2 uv = coord / max(viewportSize, float2(1.0, 1.0));\n" +
-            "        float2 distance = (uv - float2(0.5, 0.5)) * 2.0;\n" +
-            "        float corner = smoothstep(0.30, 1.60, dot(distance, distance));\n" +
+            "        float2 fromCenter = (uv - float2(0.5, 0.5)) * 2.0;\n" +
+            "        float corner = smoothstep(0.30, 1.60, dot(fromCenter, fromCenter));\n" +
             "        blended *= 1.0 - 0.38 * boost * corner;\n" +
             "    }\n" +
             "    return half4(half3(clamp(blended, 0.0, 1.0)), src.a);\n" +
@@ -239,24 +239,37 @@ public final class LomoFilter {
             int count = width * rows;
             if (pixels.length < count) pixels = new int[count];
             bitmap.getPixels(pixels, 0, width, 0, top, width, rows);
-            for (int i = 0; i < count; i++) {
-                int c = pixels[i];
-                int r6 = (c >>> 18) & FAST_MASK;
-                int g6 = (c >>> 10) & FAST_MASK;
-                int b6 = (c >>> 2) & FAST_MASK;
-                int mapped = lookup[(r6 << FAST_R_SHIFT) | (g6 << FAST_G_SHIFT) | b6];
-                if (boost > 0f) {
-                    int y = top + i / width;
-                    int x = i % width;
-                    float radiusSquared = xSquared[x] + ySquared[y];
-                    float corner = smoothstep(0.30f, 1.60f, radiusSquared);
-                    float darken = 1f - 0.38f * boost * corner;
-                    int rr = clamp255(Math.round(red(mapped) * darken));
-                    int gg = clamp255(Math.round(green(mapped) * darken));
-                    int bb = clamp255(Math.round(blue(mapped) * darken));
-                    mapped = (rr << 16) | (gg << 8) | bb;
+            if (boost == 0f) {
+                // Original fast path; do not slow down ordinary 0-100% photos.
+                for (int i = 0; i < count; i++) {
+                    int c = pixels[i];
+                    int r6 = (c >>> 18) & FAST_MASK;
+                    int g6 = (c >>> 10) & FAST_MASK;
+                    int b6 = (c >>> 2) & FAST_MASK;
+                    int mapped = lookup[(r6 << FAST_R_SHIFT) | (g6 << FAST_G_SHIFT) | b6];
+                    pixels[i] = (c & 0xff000000) | mapped;
                 }
-                pixels[i] = (c & 0xff000000) | mapped;
+            } else {
+                // Vignette row by row to avoid division/modulo for each pixel.
+                for (int row = 0; row < rows; row++) {
+                    float y2 = ySquared[top + row];
+                    int offset = row * width;
+                    for (int x = 0; x < width; x++) {
+                        int i = offset + x;
+                        int c = pixels[i];
+                        int r6 = (c >>> 18) & FAST_MASK;
+                        int g6 = (c >>> 10) & FAST_MASK;
+                        int b6 = (c >>> 2) & FAST_MASK;
+                        int mapped = lookup[(r6 << FAST_R_SHIFT) | (g6 << FAST_G_SHIFT) | b6];
+                        float corner = smoothstep(0.30f, 1.60f, xSquared[x] + y2);
+                        float darken = 1f - 0.38f * boost * corner;
+                        int rr = clamp255(Math.round(red(mapped) * darken));
+                        int gg = clamp255(Math.round(green(mapped) * darken));
+                        int bb = clamp255(Math.round(blue(mapped) * darken));
+                        pixels[i] = (c & 0xff000000) |
+                                (rr << 16) | (gg << 8) | bb;
+                    }
+                }
             }
             bitmap.setPixels(pixels, 0, width, 0, top, width, rows);
         }
