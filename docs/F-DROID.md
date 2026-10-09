@@ -1,65 +1,50 @@
-# F-Droid release notes
+# Official F-Droid release process
 
-This document keeps the upstream pieces needed for a first submission to the official F-Droid repository in one place.
+Lomo Camera is already listed in the official F-Droid repository:
+https://f-droid.org/packages/com.harristownapps.lomocamera/
 
 ## Application identity
 
 - App name: Lomo Camera
-- Application ID: `com.harristownapps.lomocamera`
-- Licence: `GPL-3.0-only`
-- Source: `https://github.com/penno2/lomo-camera`
-- Issue tracker: `https://github.com/penno2/lomo-camera/issues`
+- Official F-Droid application ID: `com.harristownapps.lomocamera`
+- Debug/beta application ID: `com.harristownapps.lomocamera.beta` (side-by-side test build only)
+- Licence: GPL-3.0-only
+- Source: https://github.com/penno2/lomo-camera
+- Issue tracker: https://github.com/penno2/lomo-camera/issues
 - Minimum Android version: Android 13 / API 33
 
-## Upstream metadata
+## Existing F-Droid metadata
 
-Store metadata lives in:
+The canonical metadata lives in F-Droid's own `fdroiddata` repository:
+https://gitlab.com/fdroid/fdroiddata/-/blob/master/metadata/com.harristownapps.lomocamera.yml
 
-`fastlane/metadata/android/en-US/`
+At the time of preparing version 1.1 it specifies:
+- `AutoUpdateMode: Version`
+- `UpdateCheckMode: Tags`
+- `CurrentVersion: 1.0.1`
+- `CurrentVersionCode: 2`
 
-Before tagging v1.0, add the binary artwork files:
+F-Droid therefore checks upstream release tags for newer versions. F-Droid's automated detection, build, signing and repository publication can take time and are **not** immediate when a GitHub tag is created.
 
-- `fastlane/metadata/android/en-US/images/icon.png`
-- `fastlane/metadata/android/en-US/images/phoneScreenshots/1.png`
-- `fastlane/metadata/android/en-US/images/phoneScreenshots/2.png`
+## Version 1.1 release
 
-Additional screenshots are welcome but not required for the first submission.
+- `versionName '1.1'`
+- `versionCode 3`
+- Release tag: `v1.1`
+- Upstream What's New text: `fastlane/metadata/android/en-US/changelogs/3.txt`
+- Full app description: `fastlane/metadata/android/en-US/full_description.txt`
 
-## Suggested fdroiddata metadata
+### Checklist
 
-The following is a starting point for `metadata/com.harristownapps.lomocamera.yml` in a fork of F-Droid's `fdroiddata` repository. It should be checked with the current `fdroidserver` linter before submission.
+1. Finish review/testing of the strength-slider beta and confirm the GitHub Actions debug build passes on the exact release candidate.
+2. Merge the beta pull request into `main`. Confirm the merged `main` still has version 1.1 (code 3), and **no** further unverified commits.
+3. In GitHub **Releases → Draft a new release**, create the tag `v1.1` **from `main`**, not from the beta branch.
+4. Use the release notes in `docs/RELEASE-1.1.md`; publish the release. The tag is the important event for F-Droid's automatic updater.
+5. Check https://f-droid.org/packages/com.harristownapps.lomocamera/ and the upstream `fdroiddata` metadata for the new version. If F-Droid does not detect/build it, inspect F-Droid build logs or report an update issue against their metadata.
+6. Let existing F-Droid users update through the F-Droid app. **Do not** install GitHub debug APKs on top of official F-Droid builds: debug builds use a different package name and signing key.
 
-```yaml
-Categories:
-  - Multimedia
-License: GPL-3.0-only
-AuthorName: Harristown Apps
-SourceCode: https://github.com/penno2/lomo-camera
-IssueTracker: https://github.com/penno2/lomo-camera/issues
+A GitHub release APK is not required: F-Droid builds and signs release APKs from source. GitHub's Actions debug APK is **not** the F-Droid-distributed release.
 
-RepoType: git
-Repo: https://github.com/penno2/lomo-camera.git
+## Privacy
 
-Builds:
-  - versionName: '1.0'
-    versionCode: 1
-    commit: v1.0
-    subdir: app
-    gradle:
-      - yes
-
-AutoUpdateMode: Version
-UpdateCheckMode: Tags
-CurrentVersion: '1.0'
-CurrentVersionCode: 1
-```
-
-## Release sequence
-
-1. Add the icon and screenshots under the Fastlane metadata path.
-2. Confirm `versionName '1.0'` and `versionCode 1` in `app/build.gradle`.
-3. Confirm the GitHub Actions debug build is green and perform one final device smoke test.
-4. Tag that exact commit `v1.0` and push the tag.
-5. Fork `fdroid/fdroiddata`, add `metadata/com.harristownapps.lomocamera.yml`, run/lint the metadata if practical, and open a merge request labelled as a new app.
-
-F-Droid will build and sign the APK from source using its own infrastructure. That is intentional for this project; a Play Store build may use a different signing key, so switching between the F-Droid and Play editions can require uninstall/reinstall.
+This release adds no permissions. Only the Android CAMERA permission is required. There is no INTERNET or location permission.
