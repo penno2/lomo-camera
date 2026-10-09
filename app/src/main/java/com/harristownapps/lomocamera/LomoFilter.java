@@ -38,8 +38,10 @@ public final class LomoFilter {
     private static final int FAST_G_SHIFT = FAST_BITS;
     private static final int FAST_R_SHIFT = FAST_BITS * 2;
 
-    // The preview shader stays alive so the slider can change its uniform live.
+    // TextureView's RenderNode may retain uniforms until its RenderEffect is replaced.
+    // Keep the view and shader so every slider movement can install a new effect.
     private RuntimeShader previewShader;
+    private TextureView previewView;
 
     private final Bitmap lutBitmap;
     private final int[] lutPixels;
@@ -56,6 +58,8 @@ public final class LomoFilter {
             "uniform shader lut;\n" +
             "uniform float lutN;\n" +
             "uniform float strength;\n" +
+            "uniform float boost;\n" +
+            "uniform float2 viewportSize;\n" +
             "\n" +
             "half3 sampleLut(float3 rgb) {\n" +
             "    float3 p = clamp(rgb, 0.0, 1.0) * (lutN - 1.0);\n" +
@@ -110,6 +114,15 @@ public final class LomoFilter {
             "    half3 mapped = finishLook(sampleLut(float3(src.rgb)));\n" +
             "    if (strength == 1.0) return half4(mapped, src.a);\n" +
             "    float3 blended = float3(src.rgb) + (float3(mapped) - float3(src.rgb)) * strength;\n" +
+            "    if (boost > 0.0) {\n" +
+            "        blended = (blended - 0.5) * (1.0 + 0.16 * boost) + 0.5;\n" +
+            "        float lum = dot(blended, float3(0.2126, 0.7152, 0.0722));\n" +
+            "        blended = float3(lum) + (blended - float3(lum)) * (1.0 + 0.28 * boost);\n" +
+            "        float2 uv = coord / max(viewportSize, float2(1.0, 1.0));\n" +
+            "        float2 distance = (uv - float2(0.5, 0.5)) * 2.0;\n" +
+            "        float corner = smoothstep(0.30, 1.60, dot(distance, distance));\n" +
+            "        blended *= 1.0 - 0.38 * boost * corner;\n" +
+            "    }\n" +
             "    return half4(half3(clamp(blended, 0.0, 1.0)), src.a);\n" +
             "}\n";
 
@@ -140,21 +153,57 @@ public final class LomoFilter {
 
     /** Apply the LUT live to a TextureView using an Android 13+ RuntimeShader. */
     public void applyToPreview(TextureView view) {
+        previewView = view;
         RuntimeShader runtimeShader = new RuntimeShader(AGSL);
         BitmapShader lutShader = new BitmapShader(lutBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
         lutShader.setFilterMode(BitmapShader.FILTER_MODE_NEAREST);
         runtimeShader.setInputBuffer("lut", lutShader);
         runtimeShader.setFloatUniform("lutN", (float) LUT_SIZE);
-        runtimeShader.setFloatUniform("strength", 1f);
         previewShader = runtimeShader;
-        view.setRenderEffect(RenderEffect.createRuntimeShaderEffect(runtimeShader, "cameraInput"));
+
+        // The camera view can be 0x0 at onCreate, so update the vignette's
+        // coordinate space after the first layout and after rotation/resizing.
+        view.addOnLayoutChangeListener((v, left, top, right, bottom,
+                                         oldLeft, oldTop, oldRight, oldBottom) -> {
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+                installPreviewEffect();
+            }
+        });
+        setPreviewStrength(100);
     }
 
-    /** Set the live preview strength; 0 = off, 100 = original, 200 = extra strong. */
+    /**
+     * Reinstalling the RenderEffect is intentional: updating just RuntimeShader
+     * uniforms (and calling TextureView.invalidate()) didn't refresh the live
+     * preview on the Pixel 8. A new RenderEffect invalidates the RenderNode.
+     */
+    private void installPreviewEffect() {
+        if (previewShader == null || previewView == null) return;
+        previewShader.setFloatUniform("viewportSize",
+                (float) Math.max(1, previewView.getWidth()),
+                (float) Math.max(1, previewView.getHeight()));
+        previewView.setRenderEffect(RenderEffect.createRuntimeShaderEffect(previewShader, "cameraInput"));
+        previewView.postInvalidateOnAnimation();
+    }
+
+    /** 0% = plain camera, 100% = original LUT, 200% = amplified, punchy Lomo. */
     public void setPreviewStrength(int percent) {
-        if (previewShader != null) {
-            previewShader.setFloatUniform("strength", Math.max(0f, Math.min(2f, percent / 100f)));
-        }
+        if (previewShader == null) return;
+        int p = Math.max(0, Math.min(200, percent));
+        previewShader.setFloatUniform("strength", strengthMultiplier(p));
+        previewShader.setFloatUniform("boost", extraBoost(p));
+        installPreviewEffect();
+    }
+
+    // Keep 0-100% and exactly 100% identical to the previous beta.
+    // At the upper end exaggerate the calibrated colour displacement by 3x
+    // instead of the old 2x; contrast, saturation and vignette add extra punch.
+    private static float strengthMultiplier(int percent) {
+        return percent <= 100 ? percent / 100f : 1f + 2f * (percent - 100) / 100f;
+    }
+
+    private static float extraBoost(int percent) {
+        return Math.max(0f, (percent - 100) / 100f);
     }
 
     /** Apply the chosen strength to a captured bitmap, matching the live preview. */
@@ -165,6 +214,14 @@ public final class LomoFilter {
         // Original strength uses the existing fast LUT, preserving 1.0.1 exactly.
         // Other strengths get a temporary pre-blended table: still one lookup per pixel.
         final int[] lookup = strength == 100 ? fastLut : makeStrengthLut(strength);
+        final float boost = extraBoost(strength);
+        final float[] xSquared = boost > 0f ? new float[bitmap.getWidth()] : null;
+        if (xSquared != null) {
+            for (int x = 0; x < bitmap.getWidth(); x++) {
+                float dx = 2f * ((x + 0.5f) / bitmap.getWidth() - 0.5f);
+                xSquared[x] = dx * dx;
+            }
+        }
         final long start = System.nanoTime();
         final int width = bitmap.getWidth();
         final int height = bitmap.getHeight();
@@ -182,6 +239,18 @@ public final class LomoFilter {
                 int g6 = (c >>> 10) & FAST_MASK;
                 int b6 = (c >>> 2) & FAST_MASK;
                 int mapped = lookup[(r6 << FAST_R_SHIFT) | (g6 << FAST_G_SHIFT) | b6];
+                if (boost > 0f) {
+                    int y = top + i / width;
+                    int x = i % width;
+                    float dy = 2f * ((y + 0.5f) / height - 0.5f);
+                    float radiusSquared = xSquared[x] + dy * dy;
+                    float corner = smoothstep(0.30f, 1.60f, radiusSquared);
+                    float darken = 1f - 0.38f * boost * corner;
+                    int rr = clamp255(Math.round(red(mapped) * darken));
+                    int gg = clamp255(Math.round(green(mapped) * darken));
+                    int bb = clamp255(Math.round(blue(mapped) * darken));
+                    mapped = (rr << 16) | (gg << 8) | bb;
+                }
                 pixels[i] = (c & 0xff000000) | mapped;
             }
             bitmap.setPixels(pixels, 0, width, 0, top, width, rows);
@@ -196,7 +265,8 @@ public final class LomoFilter {
     /** Preblend the existing lookup with the original colour for fast photo processing. */
     private int[] makeStrengthLut(int strengthPercent) {
         int[] blended = new int[fastLut.length];
-        float strength = strengthPercent / 100f;
+        float strength = strengthMultiplier(strengthPercent);
+        float boost = extraBoost(strengthPercent);
         for (int r6 = 0; r6 < FAST_SIZE; r6++) {
             int r = representative8Bit(r6);
             for (int g6 = 0; g6 < FAST_SIZE; g6++) {
@@ -205,10 +275,23 @@ public final class LomoFilter {
                     int b = representative8Bit(b6);
                     int index = (r6 << FAST_R_SHIFT) | (g6 << FAST_G_SHIFT) | b6;
                     int mapped = fastLut[index];
-                    int outR = clamp255(Math.round(r + (red(mapped) - r) * strength));
-                    int outG = clamp255(Math.round(g + (green(mapped) - g) * strength));
-                    int outB = clamp255(Math.round(b + (blue(mapped) - b) * strength));
-                    blended[index] = (outR << 16) | (outG << 8) | outB;
+                    float outR = r + (red(mapped) - r) * strength;
+                    float outG = g + (green(mapped) - g) * strength;
+                    float outB = b + (blue(mapped) - b) * strength;
+                    if (boost > 0f) {
+                        float contrast = 1f + 0.16f * boost;
+                        outR = (outR - 127.5f) * contrast + 127.5f;
+                        outG = (outG - 127.5f) * contrast + 127.5f;
+                        outB = (outB - 127.5f) * contrast + 127.5f;
+                        float lum = 0.2126f * outR + 0.7152f * outG + 0.0722f * outB;
+                        float saturation = 1f + 0.28f * boost;
+                        outR = lum + (outR - lum) * saturation;
+                        outG = lum + (outG - lum) * saturation;
+                        outB = lum + (outB - lum) * saturation;
+                    }
+                    blended[index] = (clamp255(Math.round(outR)) << 16) |
+                            (clamp255(Math.round(outG)) << 8) |
+                            clamp255(Math.round(outB));
                 }
             }
         }
