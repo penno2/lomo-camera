@@ -38,6 +38,9 @@ public final class LomoFilter {
     private static final int FAST_G_SHIFT = FAST_BITS;
     private static final int FAST_R_SHIFT = FAST_BITS * 2;
 
+    // The preview shader stays alive so the slider can change its uniform live.
+    private RuntimeShader previewShader;
+
     private final Bitmap lutBitmap;
     private final int[] lutPixels;
     private final int lutWidth;
@@ -52,6 +55,7 @@ public final class LomoFilter {
             "uniform shader cameraInput;\n" +
             "uniform shader lut;\n" +
             "uniform float lutN;\n" +
+            "uniform float strength;\n" +
             "\n" +
             "half3 sampleLut(float3 rgb) {\n" +
             "    float3 p = clamp(rgb, 0.0, 1.0) * (lutN - 1.0);\n" +
@@ -102,8 +106,11 @@ public final class LomoFilter {
             "\n" +
             "half4 main(float2 coord) {\n" +
             "    half4 src = cameraInput.eval(coord);\n" +
+            "    if (strength <= 0.0) return src;\n" +
             "    half3 mapped = finishLook(sampleLut(float3(src.rgb)));\n" +
-            "    return half4(mapped, src.a);\n" +
+            "    if (strength == 1.0) return half4(mapped, src.a);\n" +
+            "    float3 blended = float3(src.rgb) + (float3(mapped) - float3(src.rgb)) * strength;\n" +
+            "    return half4(half3(clamp(blended, 0.0, 1.0)), src.a);\n" +
             "}\n";
 
     public LomoFilter(Context context) {
@@ -138,12 +145,26 @@ public final class LomoFilter {
         lutShader.setFilterMode(BitmapShader.FILTER_MODE_NEAREST);
         runtimeShader.setInputBuffer("lut", lutShader);
         runtimeShader.setFloatUniform("lutN", (float) LUT_SIZE);
+        runtimeShader.setFloatUniform("strength", 1f);
+        previewShader = runtimeShader;
         view.setRenderEffect(RenderEffect.createRuntimeShaderEffect(runtimeShader, "cameraInput"));
     }
 
-    /** Apply a high-accuracy pre-expanded version of the LUT to a captured bitmap in-place. */
-    public void applyToBitmap(Bitmap bitmap) {
+    /** Set the live preview strength; 0 = off, 100 = original, 200 = extra strong. */
+    public void setPreviewStrength(int percent) {
+        if (previewShader != null) {
+            previewShader.setFloatUniform("strength", Math.max(0f, Math.min(2f, percent / 100f)));
+        }
+    }
+
+    /** Apply the chosen strength to a captured bitmap, matching the live preview. */
+    public void applyToBitmap(Bitmap bitmap, int strengthPercent) {
         if (bitmap == null) return;
+        int strength = Math.max(0, Math.min(200, strengthPercent));
+        if (strength == 0) return;
+        // Original strength uses the existing fast LUT, preserving 1.0.1 exactly.
+        // Other strengths get a temporary pre-blended table: still one lookup per pixel.
+        final int[] lookup = strength == 100 ? fastLut : makeStrengthLut(strength);
         final long start = System.nanoTime();
         final int width = bitmap.getWidth();
         final int height = bitmap.getHeight();
@@ -160,7 +181,7 @@ public final class LomoFilter {
                 int r6 = (c >>> 18) & FAST_MASK;
                 int g6 = (c >>> 10) & FAST_MASK;
                 int b6 = (c >>> 2) & FAST_MASK;
-                int mapped = fastLut[(r6 << FAST_R_SHIFT) | (g6 << FAST_G_SHIFT) | b6];
+                int mapped = lookup[(r6 << FAST_R_SHIFT) | (g6 << FAST_G_SHIFT) | b6];
                 pixels[i] = (c & 0xff000000) | mapped;
             }
             bitmap.setPixels(pixels, 0, width, 0, top, width, rows);
@@ -170,6 +191,28 @@ public final class LomoFilter {
         double mp = (width * (double) height) / 1_000_000.0;
         Log.i(TAG, String.format("Lomo LUT: %dx%d (%.1f MP) in %.1f ms (%.1f MP/s)",
                 width, height, mp, ms, mp / Math.max(0.001, ms / 1000.0)));
+    }
+
+    /** Preblend the existing lookup with the original colour for fast photo processing. */
+    private int[] makeStrengthLut(int strengthPercent) {
+        int[] blended = new int[fastLut.length];
+        float strength = strengthPercent / 100f;
+        for (int r6 = 0; r6 < FAST_SIZE; r6++) {
+            int r = representative8Bit(r6);
+            for (int g6 = 0; g6 < FAST_SIZE; g6++) {
+                int g = representative8Bit(g6);
+                for (int b6 = 0; b6 < FAST_SIZE; b6++) {
+                    int b = representative8Bit(b6);
+                    int index = (r6 << FAST_R_SHIFT) | (g6 << FAST_G_SHIFT) | b6;
+                    int mapped = fastLut[index];
+                    int outR = clamp255(Math.round(r + (red(mapped) - r) * strength));
+                    int outG = clamp255(Math.round(g + (green(mapped) - g) * strength));
+                    int outB = clamp255(Math.round(b + (blue(mapped) - b) * strength));
+                    blended[index] = (outR << 16) | (outG << 8) | outB;
+                }
+            }
+        }
+        return blended;
     }
 
     private void buildFastLut() {
