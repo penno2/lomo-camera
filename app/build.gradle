@@ -15,6 +15,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Side-by-side beta; never replace the official F-Droid installation.
+            applicationIdSuffix '.beta'
+            versionNameSuffix '-beta'
+        }
         release {
             minifyEnabled true
             shrinkResources true
