@@ -118,6 +118,7 @@ public final class LomoFilter {
             "        blended = (blended - 0.5) * (1.0 + 0.16 * boost) + 0.5;\n" +
             "        float lum = dot(blended, float3(0.2126, 0.7152, 0.0722));\n" +
             "        blended = float3(lum) + (blended - float3(lum)) * (1.0 + 0.28 * boost);\n" +
+            "        blended = clamp(blended, 0.0, 1.0);\n" +
             "        float2 uv = coord / max(viewportSize, float2(1.0, 1.0));\n" +
             "        float2 distance = (uv - float2(0.5, 0.5)) * 2.0;\n" +
             "        float corner = smoothstep(0.30, 1.60, dot(distance, distance));\n" +
@@ -215,16 +216,21 @@ public final class LomoFilter {
         // Other strengths get a temporary pre-blended table: still one lookup per pixel.
         final int[] lookup = strength == 100 ? fastLut : makeStrengthLut(strength);
         final float boost = extraBoost(strength);
-        final float[] xSquared = boost > 0f ? new float[bitmap.getWidth()] : null;
-        if (xSquared != null) {
-            for (int x = 0; x < bitmap.getWidth(); x++) {
-                float dx = 2f * ((x + 0.5f) / bitmap.getWidth() - 0.5f);
-                xSquared[x] = dx * dx;
-            }
-        }
         final long start = System.nanoTime();
         final int width = bitmap.getWidth();
         final int height = bitmap.getHeight();
+        final float[] xSquared = boost > 0f ? new float[width] : null;
+        final float[] ySquared = boost > 0f ? new float[height] : null;
+        if (boost > 0f) {
+            for (int x = 0; x < width; x++) {
+                float dx = 2f * ((x + 0.5f) / width - 0.5f);
+                xSquared[x] = dx * dx;
+            }
+            for (int y = 0; y < height; y++) {
+                float dy = 2f * ((y + 0.5f) / height - 0.5f);
+                ySquared[y] = dy * dy;
+            }
+        }
         final int chunkRows = 192;
         int[] pixels = new int[width * Math.min(chunkRows, height)];
 
@@ -242,8 +248,7 @@ public final class LomoFilter {
                 if (boost > 0f) {
                     int y = top + i / width;
                     int x = i % width;
-                    float dy = 2f * ((y + 0.5f) / height - 0.5f);
-                    float radiusSquared = xSquared[x] + dy * dy;
+                    float radiusSquared = xSquared[x] + ySquared[y];
                     float corner = smoothstep(0.30f, 1.60f, radiusSquared);
                     float darken = 1f - 0.38f * boost * corner;
                     int rr = clamp255(Math.round(red(mapped) * darken));
