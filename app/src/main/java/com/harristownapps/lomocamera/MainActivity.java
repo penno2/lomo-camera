@@ -135,10 +135,10 @@ public final class MainActivity extends Activity {
     private boolean processingPhoto;
     private int captureState = CAPTURE_STATE_PREVIEW;
     private Runnable precaptureTimeout;
-
     private float downX;
     private float downY;
     private boolean tapCandidate;
+    private LinearLayout strengthBar;
 
     private final TextureView.SurfaceTextureListener surfaceTextureListener =
             new TextureView.SurfaceTextureListener() {
@@ -242,6 +242,7 @@ public final class MainActivity extends Activity {
     }
 
     private void buildUi() {
+        Log.i(TAG, "MainActivity, buildUi(), starting...");
         rootView = new FrameLayout(this);
         FrameLayout root = rootView;
         root.setBackgroundColor(Color.BLACK);
@@ -288,7 +289,8 @@ public final class MainActivity extends Activity {
 
         // One compact control for the entire calibrated colour treatment.
         // It sits just above the shutter and doesn't interfere with tap-focus/zoom.
-        LinearLayout strengthBar = new LinearLayout(this);
+        //LinearLayout strengthBar = new LinearLayout(this);
+        strengthBar = new LinearLayout(this);
         strengthBar.setOrientation(LinearLayout.HORIZONTAL);
         strengthBar.setGravity(Gravity.CENTER_VERTICAL);
         strengthBar.setPadding(dp(12), dp(5), dp(12), dp(5));
@@ -346,7 +348,27 @@ public final class MainActivity extends Activity {
         barLp.setMargins(dp(18), 0, dp(18), dp(132));
         root.addView(strengthBar, barLp);
 
+        updateControlLayout(getResources().getConfiguration().orientation);
+
         setContentView(root);
+    }
+
+    private void updateControlLayout(int orientation) {
+        boolean landscape = orientation == Configuration.ORIENTATION_LANDSCAPE;
+
+        FrameLayout.LayoutParams barLp =
+                (FrameLayout.LayoutParams) strengthBar.getLayoutParams();
+        int sideMargin = dp(landscape ? 124 : 18);   // same on both sides = centred
+        barLp.setMargins(sideMargin, 0, sideMargin, dp(landscape ? 30 : 132));
+        strengthBar.setLayoutParams(barLp);
+
+        FrameLayout.LayoutParams shutterLp =
+                (FrameLayout.LayoutParams) shutterButton.getLayoutParams();
+        shutterLp.gravity = Gravity.BOTTOM |
+                (landscape ? Gravity.END : Gravity.CENTER_HORIZONTAL);
+        shutterLp.setMargins(0, 0, 0, dp(30));
+        shutterLp.setMarginEnd(dp(landscape ? 18 : 0));
+        shutterButton.setLayoutParams(shutterLp);
     }
 
     private ImageButton makeIconControlButton(int iconRes, String contentDescription) {
@@ -472,7 +494,9 @@ public final class MainActivity extends Activity {
 
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
+        Log.i(TAG, "MainActivity, onConfigurationChanged(); starting...");
         super.onConfigurationChanged(newConfig);
+        updateControlLayout(newConfig.orientation);
         if (previewSize != null) {
             updateTextureAspectRatio();
             configureTransform(textureView.getWidth(), textureView.getHeight());
