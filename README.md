@@ -15,7 +15,7 @@ Lomo Camera opens straight into the filtered view and deliberately avoids becomi
 - pinch to zoom
 - flash off / auto / on
 - front/rear camera switch
-- portrait and landscape controls
+- portrait and landscape controls, with the Lomo strength slider and shutter repositioned for landscape shooting
 - brief screen-flash and haptic shutter feedback
 - photos saved to `DCIM/Lomo`
 
