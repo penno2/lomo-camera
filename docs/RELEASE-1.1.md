@@ -9,6 +9,7 @@ This release adds a single strength slider to the famously simple Lomo Camera:
 - 200% – richer colour separation, stronger contrast, increased saturation and classic dark corners
 - Real-time changes in the live viewfinder and full-resolution saved photos
 - Remembers your chosen strength between launches
+- Improved slider and shutter positioning in landscape mode, with controls repositioned when rotating the phone
 
 No filter menus, accounts, advertisements, analytics, network access, or new permissions.
 
