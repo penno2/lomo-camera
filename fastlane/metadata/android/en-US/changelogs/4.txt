@@ -1,0 +1,8 @@
+Version 1.2
+
+- Replaced the visible Lomo strength slider with an invisible right-edge swipe gesture.
+- Tap anywhere to focus, including the slider area.
+- Fixed focus indicator positioning.
+- Improved portrait and landscape usability.
+
+Thanks to @naiqu64 for suggesting the less intrusive interface!

@@ -3,10 +3,10 @@ Lomo Camera is a deliberately tiny, single-purpose Android camera. It opens stra
 There are no filter menus, accounts, analytics, ads, gallery browser or network features. The app is designed to behave like a dedicated camera rather than a general-purpose photo editor.
 
 Features:
-• live Lomo-style preview with adjustable effect intensity (0–200%)
+• live Lomo-style preview with adjustable effect intensity (0–200%) using an invisible right-edge swipe gesture
 • original Lomo look at 100%, subtle or unfiltered shots at lower settings, and an extra-vivid high-intensity option
 • full-resolution JPEG capture
-• tap to focus
+• tap anywhere on the preview to focus
 • pinch to zoom
 • flash off, automatic and forced on
 • front/rear camera switch
