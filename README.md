@@ -6,7 +6,7 @@ Lomo Camera opens straight into the filtered view and deliberately avoids becomi
 
 ## Features
 
-- live Lomo-style preview using Android `RuntimeShader`, with adjustable 0–200% Lomo strength
+- live Lomo-style preview using Android RuntimeShader, with adjustable 0–200% Lomo strength by a right-edge vertical gesture
 - full-resolution JPEG capture through Camera2
 - the same calibrated colour treatment applied to saved photos at the selected strength
 - 100% preserves the original colour look; 0% is unfiltered; 200% adds extra-vivid colour, contrast and vignetting

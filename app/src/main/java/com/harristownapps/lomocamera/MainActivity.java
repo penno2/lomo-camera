@@ -51,9 +51,9 @@ import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.view.ViewConfiguration;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -97,10 +97,35 @@ public final class MainActivity extends Activity {
     private ImageButton flashButton;
     private ImageButton switchButton;
     private FrameLayout rootView;
+    private static final int EDGE_SLIDER_WIDTH_DP = 52;
+    private static final int EDGE_SLIDER_INSET_DP = 20;
+    private static final int EDGE_SLIDER_TRAVEL_DP = 260;
+    private static final long STRENGTH_OVERLAY_HIDE_DELAY_MS = 900L;
+
     private TextView savedIndicator;
-    private TextView strengthValue;
+    private TextView strengthOverlay;
     private volatile int lomoStrengthPercent = 100;
     private volatile int captureStrengthPercent = 100;
+    private boolean adjustingStrength;
+    private float strengthDragStartY;
+    private float strengthDragStartX;
+    private int strengthDragStartValue;
+    private boolean edgeGestureBlocked;
+
+    private final Runnable hideStrengthOverlayRunnable = () -> {
+        if (strengthOverlay == null || adjustingStrength) return;
+
+        strengthOverlay.animate().cancel();
+        strengthOverlay.animate()
+                .alpha(0f)
+                .setDuration(120L)
+                .withEndAction(() -> {
+                    if (!adjustingStrength) {
+                        strengthOverlay.setVisibility(View.INVISIBLE);
+                    }
+                })
+                .start();
+    };
 
     private LomoFilter lomoFilter;
     private ScaleGestureDetector scaleGestureDetector;
@@ -138,7 +163,6 @@ public final class MainActivity extends Activity {
     private float downX;
     private float downY;
     private boolean tapCandidate;
-    private LinearLayout strengthBar;
 
     private final TextureView.SurfaceTextureListener surfaceTextureListener =
             new TextureView.SurfaceTextureListener() {
@@ -259,6 +283,107 @@ public final class MainActivity extends Activity {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
 
+        // Invisible Lomo strength control along the right side.
+        // Independent of the preview's pinch-to-zoom touch handling.
+        View strengthTouchZone = new View(this);
+
+
+        strengthTouchZone.setOnTouchListener((v, event) -> {
+
+            int touchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+
+            switch (event.getActionMasked()) {
+
+                case MotionEvent.ACTION_DOWN:
+                    strengthDragStartX = event.getX();
+                    strengthDragStartY = event.getY();
+                    strengthDragStartValue = lomoStrengthPercent;
+
+                    adjustingStrength = false;
+                    edgeGestureBlocked = false;
+                    return true;
+
+                case MotionEvent.ACTION_MOVE:
+                    if (edgeGestureBlocked) return true;
+
+                    float deltaX = event.getX() - strengthDragStartX;
+                    float deltaY = strengthDragStartY - event.getY();
+
+                    // Don't activate the slider until a deliberate
+                    // vertical swipe has been detected.
+                    if (!adjustingStrength) {
+                        if (Math.hypot(deltaX, deltaY) <= touchSlop) {
+                            return true;
+                        }
+
+                        if (Math.abs(deltaY) <= Math.abs(deltaX)) {
+                            edgeGestureBlocked = true;
+                            return true;
+                        }
+
+                        adjustingStrength = true;
+                        showStrengthOverlay();
+                    }
+
+                    float travel = Math.max(
+                            dp(EDGE_SLIDER_TRAVEL_DP),
+                            v.getHeight() * 0.5f);
+
+                    int progress = strengthDragStartValue
+                            + Math.round((deltaY / travel) * 200f);
+
+                    updateLomoStrength(progress, false);
+                    return true;
+
+                case MotionEvent.ACTION_POINTER_DOWN:
+                    edgeGestureBlocked = true;
+                    finishStrengthAdjustment();
+                    return true;
+
+                case MotionEvent.ACTION_UP:
+                    if (adjustingStrength) {
+                        finishStrengthAdjustment();
+
+                    } else if (!edgeGestureBlocked &&
+                            Math.hypot(
+                                    event.getX() - strengthDragStartX,
+                                    event.getY() - strengthDragStartY
+                            ) <= touchSlop) {
+
+                        // This was a tap, not a swipe.
+                        // Convert the touch location into coordinates
+                        // relative to the camera preview.
+                        float rootX = v.getX() + event.getX();
+                        float rootY = v.getY() + event.getY();
+
+                        float previewX = rootX - textureView.getX();
+                        float previewY = rootY - textureView.getY();
+
+                        if (previewX >= 0 && previewX < textureView.getWidth()
+                                && previewY >= 0 && previewY < textureView.getHeight()) {
+
+                            focusAtPreviewPoint(previewX, previewY);
+                        }
+                    }
+                    return true;
+
+                case MotionEvent.ACTION_CANCEL:
+                    finishStrengthAdjustment();
+                    edgeGestureBlocked = true;
+                    return true;
+            }
+
+            return true;
+        });
+
+        FrameLayout.LayoutParams edgeLp = new FrameLayout.LayoutParams(
+                dp(EDGE_SLIDER_WIDTH_DP),
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                Gravity.END);
+
+        edgeLp.rightMargin = dp(EDGE_SLIDER_INSET_DP);
+        root.addView(strengthTouchZone, edgeLp);
+
         LinearLayout topControls = new LinearLayout(this);
         topControls.setOrientation(LinearLayout.HORIZONTAL);
         topControls.setGravity(Gravity.CENTER_VERTICAL);
@@ -287,80 +412,35 @@ public final class MainActivity extends Activity {
         shutterLp.bottomMargin = dp(30);
         root.addView(shutterButton, shutterLp);
 
-        // One compact control for the entire calibrated colour treatment.
-        // It sits just above the shutter and doesn't interfere with tap-focus/zoom.
-        //LinearLayout strengthBar = new LinearLayout(this);
-        strengthBar = new LinearLayout(this);
-        strengthBar.setOrientation(LinearLayout.HORIZONTAL);
-        strengthBar.setGravity(Gravity.CENTER_VERTICAL);
-        strengthBar.setPadding(dp(12), dp(5), dp(12), dp(5));
-        GradientDrawable strengthBackground = new GradientDrawable();
-        strengthBackground.setColor(0xB0000000);
-        strengthBackground.setCornerRadius(dp(22));
-        strengthBackground.setStroke(dp(1), 0x55FFFFFF);
-        strengthBar.setBackground(strengthBackground);
+        strengthOverlay = new TextView(this);
+        strengthOverlay.setTextColor(Color.WHITE);
+        strengthOverlay.setTextSize(14f);
+        strengthOverlay.setGravity(Gravity.CENTER);
+        strengthOverlay.setPadding(dp(18), dp(9), dp(18), dp(9));
 
-        TextView strengthLabel = new TextView(this);
-        strengthLabel.setText("LOMO");
-        strengthLabel.setTextColor(Color.WHITE);
-        strengthLabel.setTextSize(12);
-        strengthLabel.setGravity(Gravity.CENTER_VERTICAL);
-        strengthBar.addView(strengthLabel, new LinearLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT, dp(42)));
+        GradientDrawable strengthBg = new GradientDrawable();
+        strengthBg.setColor(0xCC111111);
+        strengthBg.setCornerRadius(dp(18));
+        strengthBg.setStroke(dp(1), 0x44FFFFFF);
+        strengthOverlay.setBackground(strengthBg);
 
-        SeekBar strengthSlider = new SeekBar(this);
-        strengthSlider.setMax(200);
-        strengthSlider.setProgress(lomoStrengthPercent);
-        strengthSlider.setContentDescription("Lomo strength, 0 to 200 percent");
-        LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(0, dp(42), 1f);
-        sliderLp.leftMargin = dp(7);
-        sliderLp.rightMargin = dp(7);
-        strengthBar.addView(strengthSlider, sliderLp);
+        strengthOverlay.setText("Lomo " + lomoStrengthPercent + "%");
+        strengthOverlay.setAlpha(0f);
+        strengthOverlay.setVisibility(View.INVISIBLE);
 
-        strengthValue = new TextView(this);
-        strengthValue.setText(lomoStrengthPercent + "%");
-        strengthValue.setTextColor(Color.WHITE);
-        strengthValue.setTextSize(13);
-        strengthValue.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
-        strengthBar.addView(strengthValue, new LinearLayout.LayoutParams(dp(45), dp(42)));
-
-        strengthSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                lomoStrengthPercent = progress;
-                strengthValue.setText(progress + "%");
-                lomoFilter.setPreviewStrength(progress);
-                textureView.invalidate();
-                if (fromUser) {
-                    getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE).edit()
-                            .putInt(PREF_STRENGTH, progress).apply();
-                }
-            }
-
-            @Override public void onStartTrackingTouch(SeekBar seekBar) { }
-            @Override public void onStopTrackingTouch(SeekBar seekBar) { }
-        });
-
-        FrameLayout.LayoutParams barLp = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
+        FrameLayout.LayoutParams strengthLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        barLp.setMargins(dp(18), 0, dp(18), dp(132));
-        root.addView(strengthBar, barLp);
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        strengthLp.topMargin = dp(36);
+        root.addView(strengthOverlay, strengthLp);
 
         updateControlLayout(getResources().getConfiguration().orientation);
-
         setContentView(root);
     }
 
     private void updateControlLayout(int orientation) {
         boolean landscape = orientation == Configuration.ORIENTATION_LANDSCAPE;
-
-        FrameLayout.LayoutParams barLp =
-                (FrameLayout.LayoutParams) strengthBar.getLayoutParams();
-        int sideMargin = dp(landscape ? 124 : 18);   // same on both sides = centred
-        barLp.setMargins(sideMargin, 0, sideMargin, dp(landscape ? 30 : 132));
-        strengthBar.setLayoutParams(barLp);
 
         FrameLayout.LayoutParams shutterLp =
                 (FrameLayout.LayoutParams) shutterButton.getLayoutParams();
@@ -396,6 +476,50 @@ public final class MainActivity extends Activity {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
+    private void updateLomoStrength(int progress, boolean persist) {
+        progress = clamp(progress, 0, 200);
+        lomoStrengthPercent = progress;
+        lomoFilter.setPreviewStrength(progress);
+        textureView.invalidate();
+        updateStrengthOverlay(progress);
+
+        if (persist) {
+            getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+                    .edit()
+                    .putInt(PREF_STRENGTH, progress)
+                    .apply();
+        }
+    }
+
+    private void showStrengthOverlay() {
+        if (rootView != null) {
+            rootView.removeCallbacks(hideStrengthOverlayRunnable);
+        }
+
+        if (strengthOverlay == null) return;
+
+        strengthOverlay.animate().cancel();
+        strengthOverlay.setText("Lomo " + lomoStrengthPercent + "%");
+        strengthOverlay.setVisibility(View.VISIBLE);
+        strengthOverlay.setAlpha(0f);
+
+        strengthOverlay.animate()
+                .alpha(0.65f)
+                .setDuration(80L)
+                .start();
+    }
+
+    private void updateStrengthOverlay(int progress) {
+        if (strengthOverlay == null) return;
+        strengthOverlay.setText("Lomo " + progress + "%");
+    }
+
+    private void hideStrengthOverlayDelayed() {
+        if (rootView == null) return;
+        rootView.removeCallbacks(hideStrengthOverlayRunnable);
+        rootView.postDelayed(hideStrengthOverlayRunnable, STRENGTH_OVERLAY_HIDE_DELAY_MS);
+    }
+
     private void hideSystemBars() {
         getWindow().setStatusBarColor(Color.BLACK);
         getWindow().setNavigationBarColor(Color.BLACK);
@@ -427,32 +551,41 @@ public final class MainActivity extends Activity {
 
         textureView.setOnTouchListener((v, event) -> {
             scaleGestureDetector.onTouchEvent(event);
+
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     downX = event.getX();
                     downY = event.getY();
                     tapCandidate = true;
                     break;
+
+                case MotionEvent.ACTION_POINTER_DOWN:
+                    tapCandidate = false;
+                    break;
+
                 case MotionEvent.ACTION_MOVE:
-                    if (Math.hypot(event.getX() - downX, event.getY() - downY) > dp(12)) {
+                    if (Math.hypot(
+                            event.getX() - downX,
+                            event.getY() - downY) > dp(12)) {
                         tapCandidate = false;
                     }
                     break;
+
                 case MotionEvent.ACTION_UP:
                     if (tapCandidate && !scaleGestureDetector.isInProgress()) {
-                        focusIndicator.showAt(event.getX(), event.getY());
-                        focusAt(event.getX(), event.getY());
+                        focusAtPreviewPoint(event.getX(), event.getY());
                     }
                     tapCandidate = false;
                     break;
+
                 case MotionEvent.ACTION_CANCEL:
                     tapCandidate = false;
                     break;
             }
+
             return true;
         });
     }
-
     private void setUpOrientationListener() {
         orientationListener = new OrientationEventListener(this) {
             @Override
@@ -462,6 +595,14 @@ public final class MainActivity extends Activity {
                 }
             }
         };
+    }
+
+    private void focusAtPreviewPoint(float x, float y) {
+        focusIndicator.showAt(
+                textureView.getX() + x,
+                textureView.getY() + y
+        );
+        focusAt(x, y);
     }
 
     @Override
@@ -479,6 +620,16 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        finishStrengthAdjustment();
+
+        if (rootView != null) {
+            rootView.removeCallbacks(hideStrengthOverlayRunnable);
+        }
+        if (strengthOverlay != null) {
+            strengthOverlay.animate().cancel();
+            strengthOverlay.setVisibility(View.INVISIBLE);
+        }
+
         if (orientationListener != null) orientationListener.disable();
         closeCamera();
         stopCameraThread();
@@ -722,8 +873,11 @@ public final class MainActivity extends Activity {
     private void closeCamera() {
         cancelPrecaptureTimeout();
         captureState = CAPTURE_STATE_PREVIEW;
+        boolean lockAcquired = false;
+
         try {
             cameraOpenCloseLock.acquire();
+            lockAcquired = true;
             if (captureSession != null) {
                 captureSession.close();
                 captureSession = null;
@@ -741,8 +895,10 @@ public final class MainActivity extends Activity {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
-            cameraOpening = false;
-            cameraOpenCloseLock.release();
+            if (lockAcquired) {
+                cameraOpening = false;
+                cameraOpenCloseLock.release();
+            }
         }
     }
 
@@ -1317,6 +1473,14 @@ public final class MainActivity extends Activity {
             return Long.signum((long) lhs.getWidth() * lhs.getHeight() -
                     (long) rhs.getWidth() * rhs.getHeight());
         }
+    }
+
+    private void finishStrengthAdjustment() {
+        if (!adjustingStrength) return;
+
+        adjustingStrength = false;
+        updateLomoStrength(lomoStrengthPercent, true);
+        hideStrengthOverlayDelayed();
     }
 
     private void showSavedIndicator() {
