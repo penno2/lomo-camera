@@ -209,7 +209,8 @@ public final class MainActivity extends Activity {
             completeCameraOpenAttempt();
             camera.close();
             if (cameraDevice == camera) cameraDevice = null;
-            showToast("Camera error " + error);
+            Log.e(TAG, "Camera device error: " + error + " (" + CameraErrorHelper.getDeviceErrorMessage(error) + ")");
+            showToast(CameraErrorHelper.getDeviceErrorMessage(error));
         }
 
         @Override
@@ -705,8 +706,9 @@ public final class MainActivity extends Activity {
             lockAcquired = false;
         } catch (CameraAccessException e) {
             cameraOpening = false;
-            Log.e(TAG, "Cannot open camera", e);
-            showToast("Cannot open camera");
+            Log.e(TAG, "Cannot open camera: reason=" + e.getReason() + " ("
+                    + CameraErrorHelper.getAccessErrorMessage(e.getReason()) + ")", e);
+            showToast(CameraErrorHelper.getAccessErrorMessage(e.getReason()));
         } catch (InterruptedException e) {
             cameraOpening = false;
             Thread.currentThread().interrupt();
