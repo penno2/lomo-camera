@@ -75,16 +75,9 @@ Official F-Droid packaging is published; newer upstream releases are detected fr
 
 ## Current release status
 
-Version **1.2** introduces a cleaner, more minimalist camera interface, replacing the visible Lomo strength slider with an invisible vertical swipe gesture along the right edge of the screen.
-- Swipe up or down to adjust Lomo strength (0–200%).
-- Tap anywhere on the preview to focus, including the invisible slider area.
-- Fixed focus indicator positioning.
-- Works in both portrait and landscape orientations.
-- The selected Lomo strength is remembered between launches.
+Version **1.2.1** is a bugfix release to decrease processing time for > 100% lomo shots.
 
-Thanks to @naiqu64 for suggesting the less intrusive slider interface!
-
-Release details: versionName 1.2, versionCode 4.
+Release details: versionName 1.2.1, versionCode 5.
 
 The official F-Droid package remains com.harristownapps.lomocamera; debug beta builds are separately installable as com.harristownapps.lomocamera.beta.
 

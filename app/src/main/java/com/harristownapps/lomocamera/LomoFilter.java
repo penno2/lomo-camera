@@ -52,6 +52,8 @@ public final class LomoFilter {
     private final int[] high = new int[256];
     private final float[] fraction = new float[256];
 
+    private static final int VIGNETTE_STEPS = 2048;
+
     // LUT atlas layout: x = blueSlice * LUT_SIZE + red, y = green.
     private static final String AGSL =
             "uniform shader cameraInput;\n" +
@@ -216,6 +218,8 @@ public final class LomoFilter {
         // Other strengths get a temporary pre-blended table: still one lookup per pixel.
         final int[] lookup = strength == 100 ? fastLut : makeStrengthLut(strength);
         final float boost = extraBoost(strength);
+        final int[] vignetteLut =
+                boost > 0f ? makeVignetteLut(boost) : null;
         final long start = System.nanoTime();
         final int width = bitmap.getWidth();
         final int height = bitmap.getHeight();
@@ -250,24 +254,48 @@ public final class LomoFilter {
                     pixels[i] = (c & 0xff000000) | mapped;
                 }
             } else {
-                // Vignette row by row to avoid division/modulo for each pixel.
+                // Fast vignette processing using precalculated colour values.
+                final float bandScale = (VIGNETTE_STEPS - 1) * 0.5f;
+
                 for (int row = 0; row < rows; row++) {
                     float y2 = ySquared[top + row];
                     int offset = row * width;
+
                     for (int x = 0; x < width; x++) {
                         int i = offset + x;
                         int c = pixels[i];
+
                         int r6 = (c >>> 18) & FAST_MASK;
                         int g6 = (c >>> 10) & FAST_MASK;
                         int b6 = (c >>> 2) & FAST_MASK;
-                        int mapped = lookup[(r6 << FAST_R_SHIFT) | (g6 << FAST_G_SHIFT) | b6];
-                        float corner = smoothstep(0.30f, 1.60f, xSquared[x] + y2);
-                        float darken = 1f - 0.38f * boost * corner;
-                        int rr = clamp255(Math.round(red(mapped) * darken));
-                        int gg = clamp255(Math.round(green(mapped) * darken));
-                        int bb = clamp255(Math.round(blue(mapped) * darken));
+
+                        int mapped = lookup[
+                                (r6 << FAST_R_SHIFT) |
+                                        (g6 << FAST_G_SHIFT) |
+                                        b6
+                                ];
+
+                        // Quantise radial distance to the nearest lookup band.
+                        int band = (int) (
+                                (xSquared[x] + y2) * bandScale + 0.5f
+                        );
+
+                        int base = band << 8;
+
+                        int rr = vignetteLut[
+                                base + ((mapped >>> 16) & 0xff)
+                                ];
+                        int gg = vignetteLut[
+                                base + ((mapped >>> 8) & 0xff)
+                                ];
+                        int bb = vignetteLut[
+                                base + (mapped & 0xff)
+                                ];
+
                         pixels[i] = (c & 0xff000000) |
-                                (rr << 16) | (gg << 8) | bb;
+                                (rr << 16) |
+                                (gg << 8) |
+                                bb;
                     }
                 }
             }
@@ -417,6 +445,31 @@ public final class LomoFilter {
         float c0 = c00 + (c10 - c00) * fy;
         float c1 = c01 + (c11 - c01) * fy;
         return c0 + (c1 - c0) * fz;
+    }
+
+
+
+    /**
+     * Precalculate vignette attenuation for every 8-bit colour value
+     * at 2048 radial positions.
+     */
+    private static int[] makeVignetteLut(float boost) {
+        int[] table = new int[VIGNETTE_STEPS * 256];
+
+        for (int band = 0; band < VIGNETTE_STEPS; band++) {
+            float radius = (2f * band) / (VIGNETTE_STEPS - 1);
+            float darken = 1f - 0.38f * boost *
+                    smoothstep(0.30f, 1.60f, radius);
+
+            int offset = band << 8;
+
+            for (int channel = 0; channel < 256; channel++) {
+                table[offset + channel] =
+                        clamp255(Math.round(channel * darken));
+            }
+        }
+
+        return table;
     }
 
     private static double elapsedMs(long startNs) {
