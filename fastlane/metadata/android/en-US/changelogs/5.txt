@@ -1,0 +1,6 @@
+Version 1.2.1
+
+- Greatly improved photo processing speed at Lomo strengths above 100%.
+- Reduced high-strength filter processing time on Pixel 8 by approximately 14x.
+- Preserved full-resolution photo capture and the existing Lomo colour treatment.
+
