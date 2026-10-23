@@ -73,6 +73,25 @@ Upstream store metadata is kept under `fastlane/metadata/android/en-US/`. Releas
 
 Official F-Droid packaging is published; newer upstream releases are detected from version tags in GitHub.
 
+## Beta testing
+
+Want to try new Lomo Camera features before they're officially released?
+
+Beta builds are available through [GitHub Actions]((https://github.com/penno2/lomo-camera/actions/workflows/android.yml).
+
+To install a beta:
+
+- Open the GitHub Actions link above.
+- Select a successful build for the feature or development branch you're interested in.
+- Download the LomoCamera-debug artifact.
+- Extract the ZIP file and install app-debug.apk on your Android device.
+
+Beta builds use a separate application ID (com.harristownapps.lomocamera.beta), allowing them to coexist with the official F-Droid version.
+
+**Please note**: Beta builds are for testing and may contain bugs or unfinished features. GitHub Actions artifacts may expire, and you'll generally need to be signed in to GitHub to download them.
+
+Feedback, suggestions and bug reports are welcome through [GitHub Issues](https://github.com/penno2/lomo-camera/issues).
+
 ## Current release status
 
 Version **1.2.1** is a bugfix release to decrease processing time for > 100% lomo shots.
