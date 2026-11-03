@@ -34,6 +34,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.provider.MediaStore;
 import android.util.Log;
@@ -112,8 +113,26 @@ public final class MainActivity extends Activity {
     private volatile int captureStrengthPercent = 100;
     private volatile float captureZoomRatio = 1f;
     private final Object capturePairLock = new Object();
-    private byte[] pendingCaptureJpeg;
-    private CaptureMetadata pendingCaptureMetadata;
+    private static final long CAPTURE_TIMEOUT_MS = 10_000L;
+    private static final long METADATA_WAIT_MS = 1_500L;
+    private final Handler captureTimeoutHandler = new Handler(Looper.getMainLooper());
+    private PendingCapture pendingCapture;
+
+    private static final class PendingCapture {
+        final ImageReader reader;
+        final CaptureMetadata fallback;
+        byte[] jpeg;
+        long imageTimestamp;
+        Long sensorTimestamp;
+        CaptureMetadata metadata;
+        Runnable timeout;
+
+        PendingCapture(ImageReader reader, int strength, float zoom) {
+            this.reader = reader;
+            fallback = new CaptureMetadata(null, null, null, null,
+                    null, null, null, strength, zoom);
+        }
+    }
     private boolean adjustingStrength;
     private float strengthDragStartY;
     private float strengthDragStartX;
@@ -249,10 +268,15 @@ public final class MainActivity extends Activity {
             ByteBuffer buffer = image.getPlanes()[0].getBuffer();
             byte[] jpeg = new byte[buffer.remaining()];
             buffer.get(jpeg);
-            offerCapturedJpeg(jpeg);
+            offerCapturedJpeg(reader, image.getTimestamp(), jpeg);
         } catch (Exception e) {
             Log.e(TAG, "Unable to read captured image", e);
-            runOnUiThread(() -> finishPhotoProcessing("Capture failed"));
+            PendingCapture capture;
+            synchronized (capturePairLock) {
+                capture = pendingCapture;
+                if (capture != null && capture.reader != reader) capture = null;
+            }
+            if (capture != null) finishPendingCapture(capture, "Capture failed", true);
         } finally {
             if (image != null) image.close();
         }
@@ -879,6 +903,11 @@ public final class MainActivity extends Activity {
     }
 
     private void closeCamera() {
+        PendingCapture capture;
+        synchronized (capturePairLock) {
+            capture = pendingCapture;
+        }
+        if (capture != null) finishPendingCapture(capture, "Capture cancelled", false);
         cancelPrecaptureTimeout();
         captureState = CAPTURE_STATE_PREVIEW;
         boolean lockAcquired = false;
@@ -1103,8 +1132,10 @@ public final class MainActivity extends Activity {
         captureStrengthPercent = lomoStrengthPercent;
         captureZoomRatio = zoomRatio;
         synchronized (capturePairLock) {
-            pendingCaptureJpeg = null;
-            pendingCaptureMetadata = null;
+            PendingCapture capture = new PendingCapture(
+                    imageReader, captureStrengthPercent, captureZoomRatio);
+            pendingCapture = capture;
+            armCaptureTimeoutLocked(capture, CAPTURE_TIMEOUT_MS);
         }
 
         if (!flashAvailable || captureFlashMode == FlashMode.OFF) {
@@ -1180,18 +1211,24 @@ public final class MainActivity extends Activity {
     }
 
     private void captureStillPicture() {
+        final PendingCapture capture;
+        synchronized (capturePairLock) {
+            capture = pendingCapture;
+        }
+        if (capture == null) return;
         cancelPrecaptureTimeout();
         if (cameraDevice == null || captureSession == null || imageReader == null) {
-            runOnUiThread(() -> finishPhotoProcessing("Capture failed"));
+            finishPendingCapture(capture, "Capture failed", true);
             return;
         }
 
         try {
             final int strengthAtShutter = captureStrengthPercent;
             final float zoomAtShutter = captureZoomRatio;
+            final Surface jpegSurface = capture.reader.getSurface();
             CaptureRequest.Builder captureBuilder =
                     cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-            captureBuilder.addTarget(imageReader.getSurface());
+            captureBuilder.addTarget(jpegSurface);
             captureBuilder.set(CaptureRequest.CONTROL_CAPTURE_INTENT,
                     CaptureRequest.CONTROL_CAPTURE_INTENT_STILL_CAPTURE);
             captureBuilder.set(CaptureRequest.CONTROL_AF_MODE,
@@ -1205,11 +1242,27 @@ public final class MainActivity extends Activity {
             captureSession.capture(captureBuilder.build(),
                     new CameraCaptureSession.CaptureCallback() {
                         @Override
+                        public void onCaptureStarted(CameraCaptureSession session,
+                                                     CaptureRequest request,
+                                                     long timestamp, long frameNumber) {
+                            synchronized (capturePairLock) {
+                                if (pendingCapture != capture) return;
+                                capture.sensorTimestamp = timestamp;
+                                discardMismatchedJpegLocked(capture);
+                            }
+                        }
+
+                        @Override
                         public void onCaptureCompleted(CameraCaptureSession session,
                                                        CaptureRequest request,
                                                        TotalCaptureResult result) {
+                            synchronized (capturePairLock) {
+                                if (pendingCapture != capture) return;
+                            }
                             Integer flashState = result.get(CaptureResult.FLASH_STATE);
-                            offerCaptureMetadata(new CaptureMetadata(
+                            offerCaptureMetadata(capture,
+                                    result.get(CaptureResult.SENSOR_TIMESTAMP),
+                                    new CaptureMetadata(
                                     result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
                                     result.get(CaptureResult.SENSOR_SENSITIVITY),
                                     result.get(CaptureResult.LENS_APERTURE),
@@ -1221,22 +1274,48 @@ public final class MainActivity extends Activity {
                                     zoomAtShutter));
                             Log.i(TAG, "Still capture flash=" + captureFlashMode +
                                     " result=" + flashStateName(flashState));
-                            resumePreview();
+                            if (session == captureSession) resumePreview();
                         }
 
                         @Override
                         public void onCaptureFailed(CameraCaptureSession session,
                                                     CaptureRequest request,
                                                     android.hardware.camera2.CaptureFailure failure) {
+                            synchronized (capturePairLock) {
+                                if (pendingCapture != capture) return;
+                            }
                             Log.e(TAG, "Still capture request failed: reason=" + failure.getReason());
-                            resumePreview();
-                            runOnUiThread(() -> finishPhotoProcessing("Capture failed"));
+                            if (session == captureSession) resumePreview();
+                            if (failure.wasImageCaptured()) {
+                                synchronized (capturePairLock) {
+                                    if (pendingCapture == capture) {
+                                        armCaptureTimeoutLocked(capture, METADATA_WAIT_MS);
+                                    }
+                                }
+                            } else {
+                                finishPendingCapture(capture, "Capture failed", true);
+                            }
+                        }
+
+                        @Override
+                        public void onCaptureBufferLost(CameraCaptureSession session,
+                                                        CaptureRequest request,
+                                                        Surface target, long frameNumber) {
+                            if (target == jpegSurface) {
+                                finishPendingCapture(capture, "Capture failed", true);
+                            }
+                        }
+
+                        @Override
+                        public void onCaptureSequenceAborted(CameraCaptureSession session,
+                                                             int sequenceId) {
+                            finishPendingCapture(capture, "Capture cancelled", true);
                         }
                     }, cameraHandler);
-        } catch (CameraAccessException | IllegalStateException e) {
+        } catch (CameraAccessException | RuntimeException e) {
             Log.e(TAG, "Still capture failed", e);
             resumePreview();
-            runOnUiThread(() -> finishPhotoProcessing("Capture failed"));
+            finishPendingCapture(capture, "Capture failed", true);
         }
     }
 
@@ -1315,35 +1394,94 @@ public final class MainActivity extends Activity {
         return (sensor + orientation + 360) % 360;
     }
 
-    private void offerCapturedJpeg(byte[] jpeg) {
-        CaptureMetadata metadata = null;
-        synchronized (capturePairLock) {
-            pendingCaptureJpeg = jpeg;
-            if (pendingCaptureMetadata != null) {
-                metadata = pendingCaptureMetadata;
-                pendingCaptureJpeg = null;
-                pendingCaptureMetadata = null;
+    // All pending-capture transitions are serialized by capturePairLock.
+    private void armCaptureTimeoutLocked(PendingCapture capture, long delayMillis) {
+        if (capture.timeout != null) captureTimeoutHandler.removeCallbacks(capture.timeout);
+        Runnable timeout = new Runnable() {
+            @Override
+            public void run() {
+                synchronized (capturePairLock) {
+                    if (pendingCapture != capture || capture.timeout != this) return;
+                    finishPendingCapture(capture, "Capture timed out", true);
+                }
             }
-        }
-        if (metadata != null) {
-            CaptureMetadata readyMetadata = metadata;
-            photoExecutor.execute(() -> processAndSavePhoto(jpeg, readyMetadata));
+        };
+        capture.timeout = timeout;
+        captureTimeoutHandler.postDelayed(timeout, delayMillis);
+    }
+
+    private void discardMismatchedJpegLocked(PendingCapture capture) {
+        if (capture.jpeg != null && capture.sensorTimestamp != null
+                && capture.imageTimestamp != capture.sensorTimestamp) {
+            Log.w(TAG, "Ignoring JPEG with a different capture timestamp");
+            capture.jpeg = null;
         }
     }
 
-    private void offerCaptureMetadata(CaptureMetadata metadata) {
-        byte[] jpeg = null;
+    private void offerCapturedJpeg(ImageReader reader, long timestamp, byte[] jpeg) {
         synchronized (capturePairLock) {
-            pendingCaptureMetadata = metadata;
-            if (pendingCaptureJpeg != null) {
-                jpeg = pendingCaptureJpeg;
-                pendingCaptureJpeg = null;
-                pendingCaptureMetadata = null;
+            PendingCapture capture = pendingCapture;
+            if (capture == null || capture.reader != reader) return;
+            if (capture.sensorTimestamp != null && capture.sensorTimestamp != timestamp) return;
+            capture.jpeg = jpeg;
+            capture.imageTimestamp = timestamp;
+            if (capture.metadata != null) {
+                finishPendingCapture(capture, null, false);
+            } else {
+                armCaptureTimeoutLocked(capture, METADATA_WAIT_MS);
             }
         }
-        if (jpeg != null) {
-            byte[] readyJpeg = jpeg;
-            photoExecutor.execute(() -> processAndSavePhoto(readyJpeg, metadata));
+    }
+
+    private void offerCaptureMetadata(PendingCapture capture, Long timestamp,
+                                      CaptureMetadata metadata) {
+        synchronized (capturePairLock) {
+            if (pendingCapture != capture) return;
+            if (timestamp != null) capture.sensorTimestamp = timestamp;
+            discardMismatchedJpegLocked(capture);
+            capture.metadata = metadata;
+            if (capture.jpeg != null) finishPendingCapture(capture, null, false);
+        }
+    }
+
+    private void finishPendingCapture(PendingCapture capture, String failureMessage,
+                                      boolean recoverCamera) {
+        synchronized (capturePairLock) {
+            if (pendingCapture != capture) return;
+            pendingCapture = null;
+            if (capture.timeout != null) {
+                captureTimeoutHandler.removeCallbacks(capture.timeout);
+                capture.timeout = null;
+            }
+            if (capture.jpeg != null) {
+                byte[] jpeg = capture.jpeg;
+                CaptureMetadata metadata = capture.metadata != null
+                        ? capture.metadata : capture.fallback;
+                capture.jpeg = null;
+                if (capture.metadata == null) {
+                    Log.w(TAG, "Saving JPEG without optional capture-result metadata");
+                }
+                if (recoverCamera) {
+                    captureTimeoutHandler.post(() -> {
+                        if (imageReader == capture.reader && cameraHandler != null) {
+                            resumePreview();
+                        }
+                    });
+                }
+                photoExecutor.execute(() -> processAndSavePhoto(jpeg, metadata));
+            } else {
+                captureTimeoutHandler.post(() -> {
+                    // Retire the old reader before accepting another shutter press.
+                    if (recoverCamera && imageReader == capture.reader) {
+                        closeCamera();
+                        if (textureView.isAvailable() && cameraHandler != null) {
+                            openCamera(textureView.getWidth(), textureView.getHeight());
+                        }
+                    }
+                    finishPhotoProcessing(failureMessage != null
+                            ? failureMessage : "Capture failed");
+                });
+            }
         }
     }
 
@@ -1568,6 +1706,14 @@ public final class MainActivity extends Activity {
     }
 
     private void finishPhotoProcessing(String message) {
+        synchronized (capturePairLock) {
+            if (pendingCapture != null) {
+                if (pendingCapture.timeout != null) {
+                    captureTimeoutHandler.removeCallbacks(pendingCapture.timeout);
+                }
+                pendingCapture = null;
+            }
+        }
         cancelPrecaptureTimeout();
         captureState = CAPTURE_STATE_PREVIEW;
         processingPhoto = false;
