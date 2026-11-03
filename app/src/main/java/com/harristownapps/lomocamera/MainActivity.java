@@ -26,14 +26,15 @@ import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.MeteringRectangle;
 import android.hardware.camera2.params.StreamConfigurationMap;
-import android.media.ExifInterface;
 import android.media.Image;
 import android.media.ImageReader;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.ParcelFileDescriptor;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.util.Range;
@@ -54,6 +55,8 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.view.ViewConfiguration;
+
+import androidx.exifinterface.media.ExifInterface;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -84,6 +87,7 @@ public final class MainActivity extends Activity {
     private static final long PRECAPTURE_TIMEOUT_MS = 1800L;
     private static final String PREFERENCES_NAME = "lomo_camera";
     private static final String PREF_STRENGTH = "lomo_strength";
+    private static final boolean INCLUDE_DEVICE_MAKE_AND_MODEL = false;
 
     private static final int CAPTURE_STATE_PREVIEW = 0;
     private static final int CAPTURE_STATE_WAITING_PRECAPTURE = 1;
@@ -106,6 +110,10 @@ public final class MainActivity extends Activity {
     private TextView strengthOverlay;
     private volatile int lomoStrengthPercent = 100;
     private volatile int captureStrengthPercent = 100;
+    private volatile float captureZoomRatio = 1f;
+    private final Object capturePairLock = new Object();
+    private byte[] pendingCaptureJpeg;
+    private CaptureMetadata pendingCaptureMetadata;
     private boolean adjustingStrength;
     private float strengthDragStartY;
     private float strengthDragStartX;
@@ -241,7 +249,7 @@ public final class MainActivity extends Activity {
             ByteBuffer buffer = image.getPlanes()[0].getBuffer();
             byte[] jpeg = new byte[buffer.remaining()];
             buffer.get(jpeg);
-            photoExecutor.execute(() -> processAndSavePhoto(jpeg));
+            offerCapturedJpeg(jpeg);
         } catch (Exception e) {
             Log.e(TAG, "Unable to read captured image", e);
             runOnUiThread(() -> finishPhotoProcessing("Capture failed"));
@@ -990,11 +998,15 @@ public final class MainActivity extends Activity {
     }
 
     private void applyZoom(CaptureRequest.Builder builder) {
+        applyZoom(builder, zoomRatio);
+    }
+
+    private void applyZoom(CaptureRequest.Builder builder, float requestedZoomRatio) {
         if (cameraCharacteristics == null) return;
         Range<Float> zr = cameraCharacteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
         if (zr != null) {
             builder.set(CaptureRequest.CONTROL_ZOOM_RATIO,
-                    clamp(zoomRatio, zr.getLower(), zr.getUpper()));
+                    clamp(requestedZoomRatio, zr.getLower(), zr.getUpper()));
         }
     }
 
@@ -1089,6 +1101,11 @@ public final class MainActivity extends Activity {
         captureFlashMode = flashMode;
         // Snapshot strength at the shutter, even if the slider moves during JPEG processing.
         captureStrengthPercent = lomoStrengthPercent;
+        captureZoomRatio = zoomRatio;
+        synchronized (capturePairLock) {
+            pendingCaptureJpeg = null;
+            pendingCaptureMetadata = null;
+        }
 
         if (!flashAvailable || captureFlashMode == FlashMode.OFF) {
             captureStillPicture();
@@ -1170,6 +1187,8 @@ public final class MainActivity extends Activity {
         }
 
         try {
+            final int strengthAtShutter = captureStrengthPercent;
+            final float zoomAtShutter = captureZoomRatio;
             CaptureRequest.Builder captureBuilder =
                     cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
             captureBuilder.addTarget(imageReader.getSurface());
@@ -1177,7 +1196,7 @@ public final class MainActivity extends Activity {
                     CaptureRequest.CONTROL_CAPTURE_INTENT_STILL_CAPTURE);
             captureBuilder.set(CaptureRequest.CONTROL_AF_MODE,
                     CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-            applyZoom(captureBuilder);
+            applyZoom(captureBuilder, zoomAtShutter);
             applyStillFlash(captureBuilder, captureFlashMode);
             captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, getJpegOrientation());
             captureBuilder.set(CaptureRequest.JPEG_QUALITY, (byte) 95);
@@ -1190,6 +1209,16 @@ public final class MainActivity extends Activity {
                                                        CaptureRequest request,
                                                        TotalCaptureResult result) {
                             Integer flashState = result.get(CaptureResult.FLASH_STATE);
+                            offerCaptureMetadata(new CaptureMetadata(
+                                    result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
+                                    result.get(CaptureResult.SENSOR_SENSITIVITY),
+                                    result.get(CaptureResult.LENS_APERTURE),
+                                    result.get(CaptureResult.LENS_FOCAL_LENGTH),
+                                    flashState,
+                                    result.get(CaptureResult.CONTROL_AWB_MODE),
+                                    result.get(CaptureResult.CONTROL_ZOOM_RATIO),
+                                    strengthAtShutter,
+                                    zoomAtShutter));
                             Log.i(TAG, "Still capture flash=" + captureFlashMode +
                                     " result=" + flashStateName(flashState));
                             resumePreview();
@@ -1286,7 +1315,39 @@ public final class MainActivity extends Activity {
         return (sensor + orientation + 360) % 360;
     }
 
-    private void processAndSavePhoto(byte[] jpeg) {
+    private void offerCapturedJpeg(byte[] jpeg) {
+        CaptureMetadata metadata = null;
+        synchronized (capturePairLock) {
+            pendingCaptureJpeg = jpeg;
+            if (pendingCaptureMetadata != null) {
+                metadata = pendingCaptureMetadata;
+                pendingCaptureJpeg = null;
+                pendingCaptureMetadata = null;
+            }
+        }
+        if (metadata != null) {
+            CaptureMetadata readyMetadata = metadata;
+            photoExecutor.execute(() -> processAndSavePhoto(jpeg, readyMetadata));
+        }
+    }
+
+    private void offerCaptureMetadata(CaptureMetadata metadata) {
+        byte[] jpeg = null;
+        synchronized (capturePairLock) {
+            pendingCaptureMetadata = metadata;
+            if (pendingCaptureJpeg != null) {
+                jpeg = pendingCaptureJpeg;
+                pendingCaptureJpeg = null;
+                pendingCaptureMetadata = null;
+            }
+        }
+        if (jpeg != null) {
+            byte[] readyJpeg = jpeg;
+            photoExecutor.execute(() -> processAndSavePhoto(readyJpeg, metadata));
+        }
+    }
+
+    private void processAndSavePhoto(byte[] jpeg, CaptureMetadata metadata) {
         Bitmap bitmap = null;
         Bitmap oriented = null;
         try {
@@ -1316,8 +1377,8 @@ public final class MainActivity extends Activity {
                 oriented = mutable;
             }
 
-            lomoFilter.applyToBitmap(oriented, captureStrengthPercent);
-            Uri uri = saveBitmap(oriented);
+            lomoFilter.applyToBitmap(oriented, metadata.strengthPercent);
+            Uri uri = saveBitmap(oriented, metadata);
             if (uri == null) throw new IOException("MediaStore insert failed");
             runOnUiThread(() -> finishPhotoProcessing("Saved to DCIM/Lomo"));
         } catch (Exception e) {
@@ -1362,7 +1423,7 @@ public final class MainActivity extends Activity {
         return Bitmap.createBitmap(source, 0, 0, source.getWidth(), source.getHeight(), m, true);
     }
 
-    private Uri saveBitmap(Bitmap bitmap) throws IOException {
+    private Uri saveBitmap(Bitmap bitmap, CaptureMetadata metadata) throws IOException {
         String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
         ContentValues values = new ContentValues();
         values.put(MediaStore.Images.Media.DISPLAY_NAME, "Lomo_" + stamp + ".jpg");
@@ -1383,10 +1444,127 @@ public final class MainActivity extends Activity {
             if (!ok) resolver.delete(uri, null, null);
         }
 
+        writeExifMetadata(uri, bitmap, metadata);
+
         ContentValues done = new ContentValues();
         done.put(MediaStore.Images.Media.IS_PENDING, 0);
         resolver.update(uri, done, null, null);
         return uri;
+    }
+
+    private void writeExifMetadata(Uri uri, Bitmap bitmap, CaptureMetadata metadata) {
+        try (ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "rw")) {
+            if (pfd == null) throw new IOException("Unable to open photo for EXIF metadata");
+            ExifInterface exif = new ExifInterface(pfd.getFileDescriptor());
+
+            setExifAttribute(exif, ExifInterface.TAG_SOFTWARE,
+                    "Lomo Camera " + BuildConfig.VERSION_NAME);
+            String description = "Lomo strength: " + metadata.strengthPercent + "%";
+            setExifAttribute(exif, ExifInterface.TAG_USER_COMMENT, description);
+            setExifAttribute(exif, ExifInterface.TAG_IMAGE_DESCRIPTION, description);
+            if (INCLUDE_DEVICE_MAKE_AND_MODEL) {
+                setExifAttribute(exif, ExifInterface.TAG_MAKE, Build.MANUFACTURER);
+                setExifAttribute(exif, ExifInterface.TAG_MODEL, Build.MODEL);
+            }
+
+            if (metadata.exposureTimeNanos != null && metadata.exposureTimeNanos > 0L) {
+                setExifAttribute(exif, ExifInterface.TAG_EXPOSURE_TIME,
+                        formatRational(metadata.exposureTimeNanos, 1_000_000_000L));
+            }
+            if (metadata.sensitivity != null) {
+                setExifAttribute(exif, ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY,
+                        Integer.toString(metadata.sensitivity));
+            }
+            if (metadata.aperture != null && metadata.aperture > 0f) {
+                setExifAttribute(exif, ExifInterface.TAG_F_NUMBER,
+                        formatRational(Math.round(metadata.aperture * 1000f), 1000L));
+            }
+            if (metadata.focalLength != null && metadata.focalLength > 0f) {
+                setExifAttribute(exif, ExifInterface.TAG_FOCAL_LENGTH,
+                        formatRational(Math.round(metadata.focalLength * 1000f), 1000L));
+            }
+            if (metadata.flashState != null) {
+                setExifAttribute(exif, ExifInterface.TAG_FLASH,
+                        metadata.flashState == CaptureResult.FLASH_STATE_FIRED ? "1" : "0");
+            }
+
+            setExifAttribute(exif, ExifInterface.TAG_IMAGE_WIDTH,
+                    Integer.toString(bitmap.getWidth()));
+            setExifAttribute(exif, ExifInterface.TAG_IMAGE_LENGTH,
+                    Integer.toString(bitmap.getHeight()));
+            setExifAttribute(exif, ExifInterface.TAG_ORIENTATION,
+                    Integer.toString(ExifInterface.ORIENTATION_NORMAL));
+            setExifAttribute(exif, ExifInterface.TAG_COLOR_SPACE, "1");
+
+            long now = System.currentTimeMillis();
+            Date date = new Date(now);
+            String exifDate = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
+                    .format(date);
+            setExifAttribute(exif, ExifInterface.TAG_DATETIME, exifDate);
+            setExifAttribute(exif, ExifInterface.TAG_DATETIME_ORIGINAL, exifDate);
+            setExifAttribute(exif, ExifInterface.TAG_DATETIME_DIGITIZED, exifDate);
+            String timezoneOffset = new SimpleDateFormat("XXX", Locale.US).format(date);
+            setExifAttribute(exif, ExifInterface.TAG_OFFSET_TIME_ORIGINAL,
+                    "Z".equals(timezoneOffset) ? "+00:00" : timezoneOffset);
+
+            if (metadata.awbMode != null) {
+                setExifAttribute(exif, ExifInterface.TAG_WHITE_BALANCE,
+                        metadata.awbMode == CaptureRequest.CONTROL_AWB_MODE_AUTO ? "0" : "1");
+            }
+            Float zoomRatio = metadata.zoomRatio != null
+                    ? metadata.zoomRatio : metadata.zoomRatioAtShutter;
+            if (zoomRatio != null && zoomRatio > 0f) {
+                setExifAttribute(exif, ExifInterface.TAG_DIGITAL_ZOOM_RATIO,
+                        formatRational(Math.round(zoomRatio * 1000f), 1000L));
+            }
+            exif.saveAttributes();
+        } catch (IOException | RuntimeException e) {
+            Log.w(TAG, "Unable to write EXIF metadata", e);
+        }
+    }
+
+    private static void setExifAttribute(ExifInterface exif, String tag, String value) {
+        if (value != null) exif.setAttribute(tag, value);
+    }
+
+    private static String formatRational(long numerator, long denominator) {
+        long divisor = greatestCommonDivisor(numerator, denominator);
+        return (numerator / divisor) + "/" + (denominator / divisor);
+    }
+
+    private static long greatestCommonDivisor(long a, long b) {
+        while (b != 0L) {
+            long remainder = a % b;
+            a = b;
+            b = remainder;
+        }
+        return a;
+    }
+
+    private static final class CaptureMetadata {
+        final Long exposureTimeNanos;
+        final Integer sensitivity;
+        final Float aperture;
+        final Float focalLength;
+        final Integer flashState;
+        final Integer awbMode;
+        final Float zoomRatio;
+        final int strengthPercent;
+        final Float zoomRatioAtShutter;
+
+        CaptureMetadata(Long exposureTimeNanos, Integer sensitivity, Float aperture,
+                        Float focalLength, Integer flashState, Integer awbMode, Float zoomRatio,
+                        int strengthPercent, float zoomRatioAtShutter) {
+            this.exposureTimeNanos = exposureTimeNanos;
+            this.sensitivity = sensitivity;
+            this.aperture = aperture;
+            this.focalLength = focalLength;
+            this.flashState = flashState;
+            this.awbMode = awbMode;
+            this.zoomRatio = zoomRatio;
+            this.strengthPercent = strengthPercent;
+            this.zoomRatioAtShutter = zoomRatioAtShutter;
+        }
     }
 
     private void finishPhotoProcessing(String message) {

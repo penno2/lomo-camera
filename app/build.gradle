@@ -6,6 +6,10 @@ android {
     namespace 'com.harristownapps.lomocamera'
     compileSdk 36
 
+    buildFeatures {
+        buildConfig true
+    }
+
     defaultConfig {
         applicationId 'com.harristownapps.lomocamera'
         minSdk 33
@@ -32,4 +36,8 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+dependencies {
+    implementation 'androidx.exifinterface:exifinterface:1.3.7'
 }
