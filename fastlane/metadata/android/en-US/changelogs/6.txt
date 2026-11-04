@@ -1,0 +1,6 @@
+Version 1.3
+
+- Added EXIF metadata to captured photographs.
+- Recorded Lomo effect strength in photo metadata.
+- Improved high-strength Lomo photo processing performance.
+- Preserved full-resolution photo capture and existing colour treatment.
